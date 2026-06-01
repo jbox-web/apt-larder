@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+
+  <!-- light background -->
+  <rect width="200" height="200" rx="22" fill="#fafaf7"/>
+
+  <!-- ─── Can 1 (cx=41, top=70, h=52) ─────────────────────────── -->
+
+  <!-- body -->
+  <rect x="22" y="70" width="38" height="52" rx="3" fill="#d70751"/>
+  <!-- top rim — slightly lighter, rolled-edge illusion -->
+  <rect x="21" y="70" width="40" height="8"  rx="3" fill="#ee3d68"/>
+  <!-- rib line at rim/body join -->
+  <rect x="21" y="77" width="40" height="1.2" fill="#b0003e" opacity="0.6"/>
+  <!-- metal body above label -->
+  <rect x="22" y="78" width="38" height="7"  fill="#d70751"/>
+  <!-- label -->
+  <rect x="22" y="85" width="38" height="22" fill="#faf8f2"/>
+  <!-- label top accent stripe -->
+  <rect x="22" y="85" width="38" height="3.5" fill="#d70751" opacity="0.14"/>
+  <!-- label border lines -->
+  <rect x="22" y="85"  width="38" height="0.8" fill="#d70751" opacity="0.4"/>
+  <rect x="22" y="107" width="38" height="0.8" fill="#d70751" opacity="0.4"/>
+  <!-- metal body below label -->
+  <rect x="22" y="107" width="38" height="7"  fill="#d70751"/>
+  <!-- rib line at body/rim join -->
+  <rect x="21" y="113" width="40" height="1.2" fill="#8c0030" opacity="0.5"/>
+  <!-- bottom rim — darker -->
+  <rect x="21" y="114" width="40" height="8"  rx="3" fill="#a8003a"/>
+  <!-- metallic highlight stripe -->
+  <rect x="27" y="70"  width="3"  height="52" rx="1.5" fill="white" opacity="0.18"/>
+  <!-- right-edge shadow -->
+  <rect x="55" y="73"  width="4"  height="46" fill="black" opacity="0.07"/>
+  <!-- .deb text -->
+  <text x="41" y="100" text-anchor="middle"
+        font-family="'Fira Code','SF Mono',monospace"
+        font-size="8.5" font-weight="bold" fill="#c20046">.deb</text>
+
+  <!-- ─── Can 2 (cx=100, top=61, h=61 — taller centre can) ────── -->
+
+  <rect x="81" y="61"  width="38" height="61" rx="3" fill="#d70751"/>
+  <rect x="80" y="61"  width="40" height="9"  rx="3" fill="#ee3d68"/>
+  <rect x="80" y="69"  width="40" height="1.2" fill="#b0003e" opacity="0.6"/>
+  <rect x="81" y="70"  width="38" height="8"  fill="#d70751"/>
+  <rect x="81" y="78"  width="38" height="26" fill="#faf8f2"/>
+  <rect x="81" y="78"  width="38" height="4"  fill="#d70751" opacity="0.14"/>
+  <rect x="81" y="78"  width="38" height="0.8" fill="#d70751" opacity="0.4"/>
+  <rect x="81" y="104" width="38" height="0.8" fill="#d70751" opacity="0.4"/>
+  <rect x="81" y="104" width="38" height="9"  fill="#d70751"/>
+  <rect x="80" y="112" width="40" height="1.2" fill="#8c0030" opacity="0.5"/>
+  <rect x="80" y="113" width="40" height="9"  rx="3" fill="#a8003a"/>
+  <rect x="86" y="61"  width="3"  height="61" rx="1.5" fill="white" opacity="0.18"/>
+  <rect x="114" y="64" width="4"  height="55" fill="black" opacity="0.07"/>
+  <text x="100" y="95" text-anchor="middle"
+        font-family="'Fira Code','SF Mono',monospace"
+        font-size="8.5" font-weight="bold" fill="#c20046">.deb</text>
+
+  <!-- ─── Can 3 (cx=159, top=70, h=52) ─────────────────────────── -->
+
+  <rect x="140" y="70" width="38" height="52" rx="3" fill="#d70751"/>
+  <rect x="139" y="70" width="40" height="8"  rx="3" fill="#ee3d68"/>
+  <rect x="139" y="77" width="40" height="1.2" fill="#b0003e" opacity="0.6"/>
+  <rect x="140" y="78" width="38" height="7"  fill="#d70751"/>
+  <rect x="140" y="85" width="38" height="22" fill="#faf8f2"/>
+  <rect x="140" y="85" width="38" height="3.5" fill="#d70751" opacity="0.14"/>
+  <rect x="140" y="85"  width="38" height="0.8" fill="#d70751" opacity="0.4"/>
+  <rect x="140" y="107" width="38" height="0.8" fill="#d70751" opacity="0.4"/>
+  <rect x="140" y="107" width="38" height="7"  fill="#d70751"/>
+  <rect x="139" y="113" width="40" height="1.2" fill="#8c0030" opacity="0.5"/>
+  <rect x="139" y="114" width="40" height="8"  rx="3" fill="#a8003a"/>
+  <rect x="145" y="70" width="3"  height="52" rx="1.5" fill="white" opacity="0.18"/>
+  <rect x="173" y="73" width="4"  height="46" fill="black" opacity="0.07"/>
+  <text x="159" y="100" text-anchor="middle"
+        font-family="'Fira Code','SF Mono',monospace"
+        font-size="8.5" font-weight="bold" fill="#c20046">.deb</text>
+
+  <!-- ─── shelf ─────────────────────────────────────────────────── -->
+  <rect x="16"  y="122" width="168" height="5" rx="2" fill="#1e1e30"/>
+  <rect x="16"  y="125" width="168" height="2" rx="1" fill="#1e1e30" opacity="0.25"/>
+
+  <!-- ─── wordmark ──────────────────────────────────────────────── -->
+  <text x="100" y="150" text-anchor="middle"
+        font-family="'Fira Code','SF Mono',monospace"
+        font-size="13" letter-spacing="2" fill="#1e1e38">apt-larder</text>
+
+</svg>

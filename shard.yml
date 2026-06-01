@@ -1,0 +1,30 @@
+name: apt-larder
+
+version: 1.0.0
+
+crystal: '>= 1.18.0'
+
+license: MIT
+
+authors:
+  - Nicolas Rodriguez <nico@nicoladmin.fr>
+
+targets:
+  apt-larder:
+    main: src/apt-larder.cr
+
+dependencies:
+  admiral:
+    github: jwaldrip/admiral.cr
+  crystal-env:
+    github: crystal-lang/crystal-env
+    branch: master
+  tallboy:
+    github: epoch/tallboy
+
+development_dependencies:
+  ameba:
+    github: crystal-ameba/ameba
+  spectator:
+    gitlab: arctic-fox/spectator
+    version: ~> 0.12.0

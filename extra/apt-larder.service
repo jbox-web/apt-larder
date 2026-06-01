@@ -1,0 +1,60 @@
+[Unit]
+Description=apt-larder — APT caching proxy
+Documentation=https://github.com/nicoladmin/apt-larder
+After=network.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/local/bin/apt-larder server --config /etc/apt-larder/apt-larder.yml
+
+User=apt-larder
+UMask=0027
+
+# systemd creates and owns these directories; no need for ReadWritePaths.
+# CacheDirectory  → /var/cache/apt-larder
+# LogsDirectory   → /var/log/apt-larder
+CacheDirectory=apt-larder
+LogsDirectory=apt-larder
+
+# Restart on failure, but not on clean exit or SIGTERM.
+Restart=on-failure
+RestartSec=5s
+
+# Graceful shutdown: send SIGTERM, wait up to 30 s for in-flight requests.
+TimeoutStopSec=30
+KillMode=mixed
+
+# Watchdog: systemd kills and restarts the service if no keepalive is
+# received within this interval. apt-larder sends WATCHDOG=1 at half
+# the interval.
+WatchdogSec=30
+
+# Raise the file-descriptor limit for a proxy handling many concurrent
+# connections.
+LimitNOFILE=16384
+
+# Hardening
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProtectSystem=strict
+RemoveIPC=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

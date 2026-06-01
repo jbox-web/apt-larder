@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>apt-larder admin</title>
+  <link rel="stylesheet" href="https://cdn.datatables.net/2.1.8/css/dataTables.dataTables.min.css">
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+
+<div class="shell">
+  <!-- ── Sidebar ─────────────────────────────────────────────── -->
+  <aside>
+    <div class="brand">
+      <span class="brand-icon">🥫</span>
+      <span class="brand-name">apt-larder</span>
+    </div>
+    <nav>
+      <button class="active" data-tab="tab-dashboard">
+        <span class="nav-icon">◈</span> Dashboard
+      </button>
+      <button data-tab="tab-cache">
+        <span class="nav-icon">⊟</span> Cache
+      </button>
+      <button data-tab="tab-actions">
+        <span class="nav-icon">⚙</span> Actions
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      <span id="server-version" class="version-tag">—</span>
+    </div>
+  </aside>
+
+  <!-- ── Main content ───────────────────────────────────────── -->
+  <main>
+
+    <!-- Dashboard -->
+    <div id="tab-dashboard" class="tab active">
+      <h2 class="page-title">Dashboard
+        <span class="refresh-hint">auto-refresh 10 s</span>
+      </h2>
+      <div class="cards">
+        <div class="card card-green">
+          <div class="card-label">Hits</div>
+          <div class="card-value" id="stat-hits">—</div>
+        </div>
+        <div class="card card-blue">
+          <div class="card-label">Hit rate</div>
+          <div class="card-value" id="stat-rate">—</div>
+        </div>
+        <div class="card card-amber">
+          <div class="card-label">Misses</div>
+          <div class="card-value" id="stat-misses">—</div>
+        </div>
+        <div class="card card-purple">
+          <div class="card-label">Revalidations</div>
+          <div class="card-value" id="stat-reval">—</div>
+        </div>
+        <div class="card card-teal">
+          <div class="card-label">Bytes served</div>
+          <div class="card-value" id="stat-bytes">—</div>
+        </div>
+        <div class="card card-red">
+          <div class="card-label">Errors</div>
+          <div class="card-value" id="stat-errors">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cache browser -->
+    <div id="tab-cache" class="tab">
+      <div class="page-header">
+        <h2 class="page-title">Cache</h2>
+        <button id="flush-all" class="btn btn-danger">⊗ Flush all</button>
+      </div>
+      <div class="table-card">
+        <table id="cache-table" class="display" style="width:100%">
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Size</th>
+              <th>Last modified</th>
+              <th>Type</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div id="tab-actions" class="tab">
+      <h2 class="page-title">Actions</h2>
+      <div class="action-cards">
+        <div class="action-card">
+          <div class="action-card-header">
+            <span class="action-icon">🗑</span>
+            <div>
+              <div class="action-title">Evict stale files</div>
+              <div class="action-desc">Remove cached files not accessed recently.</div>
+            </div>
+          </div>
+          <form id="evict-form">
+            <label for="evict-days">Not accessed for (days)</label>
+            <div class="input-row">
+              <input id="evict-days" type="number" value="30" min="1">
+              <button type="submit" class="btn btn-primary">Run now</button>
+            </div>
+          </form>
+          <div id="evict-result" class="result-box"></div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.datatables.net/2.1.8/js/dataTables.min.js"></script>
+<script src="/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+---
+cache_dir: /home/nonroot/cache
+index_ttl: 5
+max_redirects: 5
+connect_timeout: 10
+read_timeout: 30
+log_file: /home/nonroot/logs/apt-larder.log
+quiet: false
+log_level: info
+evict_after_days: 0
+max_cache_size_gb: 0
+server_host: "0.0.0.0"
+server_port: 3142
+admin:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+  api_token: ""
+  ui_user: ""
+  ui_password: ""
+
+# Host remapping — redirect requests for a given upstream host to a different
+# mirror. The cache key always uses the original hostname so the cache remains
+# valid if the mirror changes. Value can be a bare hostname, host:port, or a
+# full URL (http://host:port).
+#
+# remaps:
+#   deb.debian.org: my-mirror.internal
+#   security.debian.org: my-mirror.internal
+#   archive.ubuntu.com: "http://ubuntu-mirror.lan:80"

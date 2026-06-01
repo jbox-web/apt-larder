@@ -1,0 +1,45 @@
+x-client: &client
+  build:
+    context: .
+    dockerfile_inline: |
+      FROM debian:trixie
+      RUN echo 'Acquire::http::Proxy "http://apt-larder:3142";' > /etc/apt/apt.conf.d/01proxy
+      CMD ["bash"]
+  # depends_on:
+  #   apt-larder:
+  #     condition: service_healthy
+  stdin_open: true
+  tty: true
+
+services:
+  apt-larder:
+    build:
+      context: .
+      target: docker-image
+    # Distroless nonroot uid=65532 cannot write to host bind-mounts created by root.
+    # Override to root for local development only — do not use in production.
+    user: root
+    restart: unless-stopped
+    ports:
+      - "3142:3142"
+      - "8080:8080"
+    volumes:
+      - ./apt-larder.example.yml:/home/nonroot/apt-larder.yml:ro
+      - ./cache:/home/nonroot/cache
+      - ./logs:/home/nonroot/logs
+    command: server --config /home/nonroot/apt-larder.yml
+    # healthcheck:
+    #   test: ["CMD-SHELL", "wget -qO- http://localhost:3142/deb.debian.org/debian/dists/trixie/InRelease > /dev/null 2>&1 || exit 1"]
+    #   interval: 5s
+    #   timeout: 3s
+    #   retries: 5
+    #   start_period: 2s
+
+  client1:
+    <<: *client
+
+  client2:
+    <<: *client
+
+  client3:
+    <<: *client

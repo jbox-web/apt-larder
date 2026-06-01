@@ -1,0 +1,18 @@
+# Ignore generated data
+/docs/
+/lib/
+/packages/
+
+# Ignore all bin files
+/bin/*
+!/bin/.keep
+
+# Ignore MacOS files
+.DS_Store
+
+# Ignore apt-larder runtime data
+/cache/
+/logs/
+
+# Ignore config file
+apt-larder.yml

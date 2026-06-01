@@ -1,0 +1,26 @@
+---
+# Paths match the CacheDirectory= and LogsDirectory= in apt-larder.service.
+# systemd creates them automatically and sets ownership to the service user.
+cache_dir: /var/cache/apt-larder
+index_ttl: 5
+max_redirects: 5
+connect_timeout: 10
+read_timeout: 30
+log_file: /var/log/apt-larder/apt-larder.log
+quiet: false
+log_level: info
+evict_after_days: 0
+max_cache_size_gb: 0
+server_host: "0.0.0.0"
+server_port: 3142
+
+admin:
+  enabled: false
+  host: "127.0.0.1"
+  port: 8080
+  api_token: ""
+  ui_user: ""
+  ui_password: ""
+
+# remaps:
+#   deb.debian.org: my-mirror.internal

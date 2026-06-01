@@ -1,0 +1,12 @@
+/var/log/apt-larder/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 apt-larder apt-larder
+    postrotate
+        systemctl kill --signal=USR1 apt-larder.service 2>/dev/null || true
+    endscript
+}
