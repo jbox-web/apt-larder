@@ -471,7 +471,7 @@ module AptLarder
         done.receive
         upstream.close rescue nil
       end
-      Log.info { "200 TUNNEL CONNECT #{req.resource}" }
+      Log.info { "#{client_ip(req.remote_address)}200 TUNNEL CONNECT #{req.resource}" }
     rescue ex
       res.status = HTTP::Status::BAD_GATEWAY
       res.puts "tunnel failed: #{ex.message}"
@@ -506,7 +506,7 @@ module AptLarder
             in .hit?         then "HIT  "
             in .miss?        then "MISS "
             in .revalidated? then "REVAL"
-            in .error?       then "WARN "
+            in .error?       then status < 500 ? "ERR  " : "FAIL "
             end
       size = bytes ? " #{format_bytes(bytes)}" : ""
       Log.info { "#{client_ip(client)}#{status} #{tag} #{method} #{key}#{size} (#{elapsed})" }
