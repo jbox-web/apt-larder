@@ -189,11 +189,15 @@ module AptLarder
       host = uri.host || return upstream_url
       target = @remaps[host]? || return upstream_url
       if target.starts_with?("http://") || target.starts_with?("https://")
-        # Full URL target: replace scheme, host and port.
+        # Full URL target: replace scheme, host, port, and optionally prepend path.
+        # e.g. "docker" → "https://download.docker.com/linux/debian" prepends
+        # "/linux/debian" so /dists/... becomes /linux/debian/dists/...
         t = URI.parse(target)
         uri.scheme = t.scheme
         uri.host = t.host
         uri.port = t.port
+        prefix = t.path.rstrip("/")
+        uri.path = prefix + uri.path unless prefix.empty?
       else
         # Bare host or host:port target.
         bare_host, _, bare_port = target.partition(":")

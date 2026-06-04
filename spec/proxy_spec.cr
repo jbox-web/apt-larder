@@ -132,6 +132,29 @@ Spectator.describe AptLarder::Proxy do
       expect(ctx.response.status_code).to eq(200)
     end
 
+    it "prepends path from full-URL remap target" do
+      received_path = ""
+      server = HTTP::Server.new do |ctx|
+        received_path = ctx.request.path
+        ctx.response.print("ok")
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      remapped_proxy = AptLarder::Proxy.new(
+        cache, AptLarder::SingleFlight.new,
+        max_redirects: 5, index_ttl: 5, connect_timeout: 10, read_timeout: 30,
+        remaps: {"docker" => "http://127.0.0.1:#{addr.port}/linux/debian"}
+      )
+
+      remapped_proxy.handle(make_ctx("GET", "/docker/dists/bullseye/InRelease"))
+      server.close
+
+      expect(received_path).to eq("/linux/debian/dists/bullseye/InRelease")
+      expect(cache.exists?("docker/dists/bullseye/InRelease")).to be_true
+    end
+
     it "parses remaps from YAML config" do
       config = AptLarder::Config.from_yaml(<<-YAML)
         remaps:
