@@ -250,6 +250,51 @@ Spectator.describe AptLarder::Proxy do
     end
   end
 
+  describe "upstream error passthrough" do
+    it "passes 404 from upstream through to the client" do
+      server = HTTP::Server.new do |ctx|
+        ctx.response.status = HTTP::Status::NOT_FOUND
+        ctx.response.print("not found")
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      ctx = make_ctx("GET", "http://127.0.0.1:#{addr.port}/dists/stable/Release")
+      proxy.handle(ctx)
+      server.close
+
+      expect(ctx.response.status_code).to eq(404)
+    end
+
+    it "passes 503 from upstream through to the client" do
+      server = HTTP::Server.new do |ctx|
+        ctx.response.status = HTTP::Status::SERVICE_UNAVAILABLE
+        ctx.response.print("unavailable")
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      ctx = make_ctx("GET", "http://127.0.0.1:#{addr.port}/dists/stable/Release")
+      proxy.handle(ctx)
+      server.close
+
+      expect(ctx.response.status_code).to eq(503)
+    end
+
+    it "returns 502 when upstream is unreachable (connection error)" do
+      sock = TCPServer.new("127.0.0.1", 0)
+      closed_port = sock.local_address.port
+      sock.close
+
+      ctx = make_ctx("GET", "http://127.0.0.1:#{closed_port}/dists/stable/Release")
+      proxy.handle(ctx)
+
+      expect(ctx.response.status_code).to eq(502)
+    end
+  end
+
   describe "HEAD on a MISS" do
     it "fetches from upstream and responds with headers only (no body)" do
       server = HTTP::Server.new do |ctx|
@@ -560,7 +605,7 @@ Spectator.describe AptLarder::Proxy do
 
   describe "upstream non-2xx responses" do
     {% for status in [403, 404, 500] %}
-    it "returns 502 and does not cache when upstream responds {{status.id}}" do
+    it "passes upstream {{status.id}} through to the client and does not cache" do
       server = HTTP::Server.new do |ctx|
         ctx.response.status_code = {{status}}
         ctx.response.print("error")
@@ -573,7 +618,7 @@ Spectator.describe AptLarder::Proxy do
       proxy.handle(ctx)
       server.close
 
-      expect(ctx.response.status_code).to eq(502)
+      expect(ctx.response.status_code).to eq({{status}})
       expect(cache.exists?("127.0.0.1:#{addr.port}/debian/pkg.deb")).to be_false
     end
     {% end %}

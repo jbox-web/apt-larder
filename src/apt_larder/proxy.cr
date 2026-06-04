@@ -27,11 +27,14 @@ module AptLarder
       Error
     end
 
-    # Carries the leader's CacheResult to all concurrent waiters for the same key.
+    # Carries the leader's result to all concurrent waiters for the same key.
     # The leader writes before channel.close; waiters read after — safe under
     # Crystal's cooperative scheduler (no yield between write and close).
+    # *status* is the HTTP status code to return to the client on error
+    # (upstream 404 is passed through; gateway errors use 502).
     private class ResultRef
       property value : CacheResult?
+      property status : Int32 = 502
 
       def initialize
         @value = nil
@@ -125,10 +128,10 @@ module AptLarder
         return
       end
 
-      cache_result = ensure_cached(key, upstream)
+      cache_result, error_status = ensure_cached(key, upstream)
 
       if cache_result.error?
-        res.status = HTTP::Status::BAD_GATEWAY
+        res.status = HTTP::Status.new(error_status)
         res.puts "upstream fetch failed"
         log_access(req.method, key, res.status_code, started_at, CacheResult::Error, client: req.remote_address)
         return
@@ -207,8 +210,11 @@ module AptLarder
 
     # Ensures *key* is in the cache, using `SingleFlight` to deduplicate
     # concurrent requests. Returns the outcome for the calling fiber.
-    private def ensure_cached(key : String, upstream : String) : CacheResult
-      return CacheResult::Hit if cached_and_valid?(key)
+    # Returns {result, client_status} where client_status is the HTTP status
+    # to return to the client on error (upstream 4xx passed through, 502 for
+    # gateway-level failures like timeouts or connection errors).
+    private def ensure_cached(key : String, upstream : String) : {CacheResult, Int32}
+      return {CacheResult::Hit, 200} if cached_and_valid?(key)
 
       # All concurrent fibers for the same key share the same ResultRef object.
       # Each fiber acquires it here (before blocking), so it remains accessible
@@ -218,11 +224,12 @@ module AptLarder
       was_leader = false
       @sf.run(key) do
         was_leader = true
-        ref.value = cached_and_valid?(key) ? CacheResult::Hit : download(key, upstream)
+        ref.value, ref.status = cached_and_valid?(key) ? {CacheResult::Hit, 200} : download(key, upstream)
       end
 
       @sf_refs_mutex.synchronize { @sf_refs.delete(key) }
-      ref.value || (was_leader ? CacheResult::Error : (@cache.exists?(key) ? CacheResult::Miss : CacheResult::Error))
+      result = ref.value || (was_leader ? CacheResult::Error : (@cache.exists?(key) ? CacheResult::Miss : CacheResult::Error))
+      {result, ref.status}
     end
 
     # Returns `true` if the cached file is fresh enough to serve without
@@ -244,10 +251,10 @@ module AptLarder
       end
     end
 
-    # Fetches *upstream*, stores the response in the cache, and returns the
-    # outcome. Content-Length mismatches are treated as errors: the partial
-    # file is discarded and `CacheResult::Error` is returned.
-    private def download(key : String, upstream : String) : CacheResult
+    # Fetches *upstream*, stores the response in the cache, and returns
+    # {result, client_status}. Content-Length mismatches are treated as errors.
+    # Upstream 4xx/5xx codes are passed through so APT sees the real reason.
+    private def download(key : String, upstream : String) : {CacheResult, Int32}
       is_immutable = immutable?(key)
       headers = HTTP::Headers{"User-Agent" => USER_AGENT}
       # Conditional revalidation for index files we already have.
@@ -255,7 +262,7 @@ module AptLarder
         headers["If-Modified-Since"] = HTTP.format_time(mtime)
       end
 
-      result = CacheResult::Error
+      result = {CacheResult::Error, 502}
       fetch(upstream, headers) do |response|
         case response.status_code
         when 200
@@ -265,12 +272,12 @@ module AptLarder
           if expected && stored != expected
             @cache.invalidate(key)
             Log.error { "incomplete download #{upstream}: expected #{expected} B, got #{stored} B" }
-            result = CacheResult::Error
+            result = {CacheResult::Error, 502}
             # body not fully consumed — the connection stream is dirty, discard it
             false
           else
             Log.debug { "fetched #{upstream} -> #{format_bytes(stored)}" }
-            result = CacheResult::Miss
+            result = {CacheResult::Miss, 200}
             # body fully consumed by store — connection is clean
             true
           end
@@ -278,12 +285,13 @@ module AptLarder
           # refresh the freshness window
           @cache.touch(key) if !is_immutable
           Log.debug { "revalidated #{upstream}" }
-          result = CacheResult::Revalidated
+          result = {CacheResult::Revalidated, 200}
           # no body — connection is clean
           true
         else
           response.body
           Log.warn { "upstream #{response.status_code} for #{upstream}" }
+          result = {CacheResult::Error, response.status_code}
           # non-2xx body drain is unreliable — discard the connection
           false
         end
@@ -291,7 +299,7 @@ module AptLarder
       result
     rescue ex
       Log.warn { "fetch failed: #{upstream} — #{ex.message}" }
-      CacheResult::Error
+      {CacheResult::Error, 502}
     end
 
     # GET with redirect following and per-host connection reuse.
