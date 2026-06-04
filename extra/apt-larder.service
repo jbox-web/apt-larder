@@ -38,7 +38,9 @@ LimitNOFILE=16384
 # Hardening
 CapabilityBoundingSet=
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
+# MemoryDenyWriteExecute is intentionally omitted: Crystal's PCRE2 JIT
+# allocates executable memory pages at runtime, which this directive would
+# block, causing "Regex JIT compile error: NOMEMORY" and a crash.
 NoNewPrivileges=yes
 PrivateDevices=yes
 PrivateTmp=yes
