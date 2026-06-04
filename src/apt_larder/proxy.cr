@@ -443,11 +443,23 @@ module AptLarder
       upstream.read_timeout = @read_timeout
 
       # upgrade() writes HTTP headers (status 200) and yields the raw client socket.
+      # The socket has sync=false (HTTP::Server default) so we must flush after
+      # each write — otherwise TLS handshake bytes sit in the buffer and the
+      # handshake times out ("Error in the push function").
       res.headers.delete("Content-Type")
       res.upgrade do |client|
         done = Channel(Nil).new
+        buf = Bytes.new(16 * 1024)
+        spawn do
+          loop do
+            n = upstream.read(buf) rescue break
+            break if n == 0
+            client.write(buf[0, n]) rescue break
+            client.flush rescue break
+          end
+          done.send(nil)
+        end
         spawn { IO.copy(client, upstream) rescue nil; done.send(nil) }
-        spawn { IO.copy(upstream, client) rescue nil; done.send(nil) }
         done.receive
         upstream.close rescue nil
       end
