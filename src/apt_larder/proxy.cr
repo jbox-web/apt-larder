@@ -104,7 +104,7 @@ module AptLarder
 
       unless req.method.in?("GET", "HEAD")
         res.status = HTTP::Status::METHOD_NOT_ALLOWED
-        log_access(req.method, req.resource, res.status_code, started_at, CacheResult::Error)
+        log_access(req.method, req.resource, res.status_code, started_at, CacheResult::Error, client: req.remote_address)
         return
       end
 
@@ -112,7 +112,7 @@ module AptLarder
       unless resolved
         res.status = HTTP::Status::BAD_REQUEST
         res.puts "cannot map request to a mirror"
-        log_access(req.method, req.resource, res.status_code, started_at, CacheResult::Error)
+        log_access(req.method, req.resource, res.status_code, started_at, CacheResult::Error, client: req.remote_address)
         return
       end
       key, upstream = resolved
@@ -121,7 +121,7 @@ module AptLarder
       if key.includes?("..")
         res.status = HTTP::Status::BAD_REQUEST
         res.puts "invalid path"
-        log_access(req.method, key, res.status_code, started_at, CacheResult::Error)
+        log_access(req.method, key, res.status_code, started_at, CacheResult::Error, client: req.remote_address)
         return
       end
 
@@ -130,7 +130,7 @@ module AptLarder
       if cache_result.error?
         res.status = HTTP::Status::BAD_GATEWAY
         res.puts "upstream fetch failed"
-        log_access(req.method, key, res.status_code, started_at, CacheResult::Error)
+        log_access(req.method, key, res.status_code, started_at, CacheResult::Error, client: req.remote_address)
         return
       end
 
@@ -143,10 +143,10 @@ module AptLarder
         @cache.invalidate(key)
         res.status = HTTP::Status::BAD_GATEWAY
         res.puts "cache entry lost, please retry"
-        log_access(req.method, key, 502, started_at, CacheResult::Error)
+        log_access(req.method, key, 502, started_at, CacheResult::Error, client: req.remote_address)
         return
       end
-      log_access(req.method, key, res.status_code, started_at, cache_result, bytes: bytes)
+      log_access(req.method, key, res.status_code, started_at, cache_result, bytes: bytes, client: req.remote_address)
     end
 
     # Maps the request (any mode) to {cache key, upstream URL}.
@@ -467,7 +467,7 @@ module AptLarder
     rescue ex
       res.status = HTTP::Status::BAD_GATEWAY
       res.puts "tunnel failed: #{ex.message}"
-      log_access(req.method, req.resource, res.status_code, started_at, CacheResult::Error)
+      log_access(req.method, req.resource, res.status_code, started_at, CacheResult::Error, client: req.remote_address)
     end
 
     # Copies *file* to *res* in `COPY_BUFFER_SIZE` chunks.
@@ -483,7 +483,7 @@ module AptLarder
 
     # Increments the appropriate stat counter and emits one access log line
     # (suppressed for HIT/REVAL in quiet mode).
-    private def log_access(method : String, key : String, status : Int32, started_at : Time::Span, cache_result : CacheResult, bytes : Int64? = nil) : Nil
+    private def log_access(method : String, key : String, status : Int32, started_at : Time::Span, cache_result : CacheResult, bytes : Int64? = nil, client : Socket::Address? = nil) : Nil
       case cache_result
       in .hit?         then @stat_hits.add(1)
       in .miss?        then @stat_misses.add(1)
@@ -501,12 +501,18 @@ module AptLarder
             in .error?       then "WARN "
             end
       size = bytes ? " #{format_bytes(bytes)}" : ""
-      Log.info { "#{status} #{tag} #{method} #{key}#{size} (#{elapsed})" }
+      Log.info { "#{client_ip(client)}#{status} #{tag} #{method} #{key}#{size} (#{elapsed})" }
     end
 
     # Delegates to `AptLarder.format_bytes` — see helpers.cr.
     private def format_bytes(n : Int64) : String
       AptLarder.format_bytes(n)
+    end
+
+    # Returns `"[ip] "` when *addr* is an IP address, empty string otherwise.
+    private def client_ip(addr : Socket::Address?) : String
+      return "" unless addr.is_a?(Socket::IPAddress)
+      "[#{addr.address}] "
     end
   end
 end
