@@ -290,7 +290,7 @@ module AptLarder
       end
       result
     rescue ex
-      Log.error(exception: ex) { "fetch failed: #{upstream}" }
+      Log.warn { "fetch failed: #{upstream} — #{ex.message}" }
       CacheResult::Error
     end
 
