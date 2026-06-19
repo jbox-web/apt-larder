@@ -16,7 +16,6 @@ on:
       - "**.md"
   schedule:
     - cron: '0 4 1 * *'
-  # Run workflow manually
   workflow_dispatch:
 
 jobs:
