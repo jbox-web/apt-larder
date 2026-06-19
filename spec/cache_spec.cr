@@ -170,6 +170,13 @@ Spectator.describe AptLarder::Cache do
       cache.valid?("pkg.deb")
       expect(cache.verified?("pkg.deb")).to be_true
     end
+
+    it "stays false after a failed valid? (corrupt file)" do
+      plant("pkg.deb", "hello")
+      File.write(File.join(tmp_dir, "pkg.deb.sha256"), "deadbeef")
+      expect(cache.valid?("pkg.deb")).to be_false
+      expect(cache.verified?("pkg.deb")).to be_false
+    end
   end
 
   describe "#invalidate" do

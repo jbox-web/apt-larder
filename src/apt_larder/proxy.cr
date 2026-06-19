@@ -473,11 +473,8 @@ module AptLarder
     # inspected or cached — TLS is negotiated end-to-end between APT and the
     # upstream mirror.
     private def tunnel(req : HTTP::Request, res : HTTP::Server::Response, started_at : Time::Span) : Nil
-      host, _, port_str = req.resource.rpartition(":")
-      port = port_str.to_i? || 443
-      # Strip the brackets from IPv6 literals (e.g. "[::1]" -> "::1") so
-      # TCPSocket receives a bare address. No-op for regular hostnames.
-      host = host.lchop('[').rchop(']')
+      # Parses host:port, including bracketed IPv6 literals — see helpers.cr.
+      host, port = AptLarder.parse_connect_target(req.resource)
 
       upstream = TCPSocket.new(host, port, connect_timeout: @connect_timeout)
       upstream.read_timeout = @read_timeout
