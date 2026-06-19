@@ -94,8 +94,13 @@ module AptLarder
           end
         end
         hash = digest.hexfinal
-        File.rename(tmp, dest)
+        # Write the sidecar before publishing the data file. If the process
+        # crashes between the two operations, the worst case is a sidecar with
+        # no (or stale) data file, which valid? rejects (File::Error / mismatch)
+        # so the entry is re-downloaded. The reverse order could leave a data
+        # file with no sidecar, which valid? would trust and serve unverified.
         File.write("#{dest}.sha256", hash)
+        File.rename(tmp, dest)
         now = Time.utc
         @mutex.synchronize do
           @known.add(key)
@@ -150,6 +155,10 @@ module AptLarder
     # Removes the file and its `.sha256` sidecar from disk and clears all
     # in-memory state for *key*. Safe to call when the file does not exist.
     def invalidate(key : String) : Nil
+      # Defense in depth: a key containing ".." could resolve outside the cache
+      # root and delete an arbitrary file. Callers should sanitize, but never
+      # trust them here — this is a destructive operation.
+      return if key.includes?("..")
       @mutex.synchronize do
         @known.delete(key)
         @mtime_cache.delete(key)

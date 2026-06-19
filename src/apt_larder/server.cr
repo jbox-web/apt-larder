@@ -9,6 +9,10 @@ module AptLarder
   class Server
     Log = ::Log.for("apt-larder.server")
 
+    # Maximum time to wait for in-flight requests to drain on shutdown before
+    # returning anyway. Keep below systemd's default TimeoutStopSec (90s).
+    SHUTDOWN_DRAIN_TIMEOUT = 30.seconds
+
     # Builds all shared objects (cache, single-flight, proxy) from *config*.
     # No I/O happens here; `start` does the actual binding.
     def initialize(@config : Config)
@@ -63,9 +67,16 @@ module AptLarder
 
       server.listen
 
-      # Graceful shutdown: drain in-flight requests before returning.
+      # Graceful shutdown: drain in-flight requests before returning, but cap
+      # the wait so a single stuck request (slow client, huge .deb) cannot block
+      # shutdown forever. systemd's TimeoutStopSec would otherwise SIGKILL us.
       SystemD.stopping
+      deadline = Time.monotonic + SHUTDOWN_DRAIN_TIMEOUT
       while @in_flight.get > 0
+        if Time.monotonic >= deadline
+          Log.warn { "shutdown drain timed out with #{@in_flight.get} request(s) still in flight" }
+          break
+        end
         sleep 50.milliseconds
       end
     ensure

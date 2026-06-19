@@ -187,6 +187,18 @@ Spectator.describe AptLarder::Cache do
       expect(File.exists?(File.join(tmp_dir, "pkg.deb.sha256"))).to be_false
     end
 
+    it "is a no-op for a key containing .. (never deletes outside the root)" do
+      # victim sits in the parent of the cache root; "../victim.txt" resolves to it
+      victim = File.join(File.dirname(tmp_dir), "victim-#{Random::Secure.hex(4)}.txt")
+      File.write(victim, "keep me")
+      begin
+        cache.invalidate("../#{File.basename(victim)}")
+        expect(File.exists?(victim)).to be_true
+      ensure
+        File.delete(victim) if File.exists?(victim)
+      end
+    end
+
     it "removes the key from all memory caches" do
       store("pkg.deb", "hello")
       cache.valid?("pkg.deb")

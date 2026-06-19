@@ -161,27 +161,41 @@ module AptLarder
       resource = req.resource
 
       if resource.starts_with?("http://") || resource.starts_with?("https://")
-        # Absolute form (proxy mode): the resource IS the upstream URL.
-        uri = URI.parse(resource)
-        host = uri.host
-        return nil unless host
-        path = uri.path
-        return nil if path.empty?
-
-        port = uri.port
-        port_suffix = if port && port != URI.default_port(uri.scheme || "http")
-                        ":#{port}"
-                      else
-                        ""
-                      end
-        {"#{host}#{port_suffix}#{path}", apply_remap(resource)}
+        resolve_absolute(resource)
       else
-        # Origin form (host-in-path mode): first path segment is the upstream host.
-        key = req.path.lchop('/')
-        host, _, rest = key.partition('/')
-        return nil if host.empty? || rest.empty?
-        {key, apply_remap("http://#{host}/#{rest}")}
+        resolve_host_in_path(req)
       end
+    end
+
+    # Absolute form (proxy mode): the resource IS the upstream URL.
+    private def resolve_absolute(resource : String) : {String, String}?
+      uri = URI.parse(resource)
+      host = uri.host
+      return nil unless host
+      path = uri.path
+      return nil if path.empty?
+
+      port = uri.port
+      port_suffix = if port && port != URI.default_port(uri.scheme || "http")
+                      ":#{port}"
+                    else
+                      ""
+                    end
+      {"#{host}#{port_suffix}#{path}", apply_remap(resource)}
+    end
+
+    # Origin form (host-in-path mode): first path segment is the upstream host.
+    private def resolve_host_in_path(req : HTTP::Request) : {String, String}?
+      key = req.path.lchop('/')
+      host, _, rest = key.partition('/')
+      return nil if host.empty? || rest.empty?
+      # Carry the query string upstream (e.g. signed mirror URLs); the cache
+      # key stays query-free, matching the absolute-form branch above.
+      upstream = "http://#{host}/#{rest}"
+      if (q = req.query) && !q.empty?
+        upstream += "?#{q}"
+      end
+      {key, apply_remap(upstream)}
     end
 
     # Applies the host remapping table to *upstream_url*.
@@ -453,8 +467,9 @@ module AptLarder
       end_str = spec[dash + 1..]
 
       if start_str.empty?
-        # Suffix range: bytes=-N (last N bytes)
+        # Suffix range: bytes=-N (last N bytes); N must be positive.
         suffix = end_str.to_i64? || return nil
+        return nil if suffix <= 0
         first = [total - suffix, 0_i64].max
         {first, total - 1}
       else

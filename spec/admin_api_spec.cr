@@ -93,6 +93,13 @@ Spectator.describe AptLarder::Admin::Api do
       api.handle(ctx)
       expect(ctx.response.status_code).to eq(404)
     end
+
+    it "rejects path traversal with 400 (guard fires before invalidate)" do
+      # decodes to "../../etc/passwd" — must be refused before any fs access
+      ctx = make_ctx("DELETE", "/api/cache/..%2F..%2Fetc%2Fpasswd")
+      api.handle(ctx)
+      expect(ctx.response.status_code).to eq(400)
+    end
   end
 
   describe "POST /api/evict" do

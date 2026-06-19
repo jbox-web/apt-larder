@@ -139,6 +139,13 @@ module AptLarder
 
       private def handle_invalidate(encoded_key : String, res : HTTP::Server::Response) : Nil
         key = URI.decode(encoded_key)
+        # Reject path traversal before touching the filesystem — a decoded key
+        # like "../../etc/passwd" must never reach exists?/invalidate.
+        if key.includes?("..")
+          res.status = HTTP::Status::BAD_REQUEST
+          json(res) { |j| j.object { j.field "error", "invalid key" } }
+          return
+        end
         unless @cache.exists?(key)
           res.status = HTTP::Status::NOT_FOUND
           json(res) { |j| j.object { j.field "error", "not found" } }

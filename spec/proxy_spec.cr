@@ -318,6 +318,28 @@ Spectator.describe AptLarder::Proxy do
     end
   end
 
+  describe "query string forwarding (host-in-path mode)" do
+    it "forwards the query string to the upstream request" do
+      received = Channel(String).new(1)
+      server = HTTP::Server.new do |ctx|
+        received.send(ctx.request.resource)
+        ctx.response.print("ok")
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      # host-in-path form with a signed-URL style query string
+      ctx = make_ctx("GET", "/127.0.0.1:#{addr.port}/dists/stable/Release?token=abc&exp=1")
+      proxy.handle(ctx)
+      target = received.receive
+      server.close
+
+      expect(ctx.response.status_code).to eq(200)
+      expect(target).to eq("/dists/stable/Release?token=abc&exp=1")
+    end
+  end
+
   describe "HEAD on a MISS" do
     it "fetches from upstream and responds with headers only (no body)" do
       server = HTTP::Server.new do |ctx|
@@ -372,6 +394,12 @@ Spectator.describe AptLarder::Proxy do
 
     it "falls back to 200 for an invalid range" do
       ctx = make_range_ctx("bytes=20-30")
+      proxy.handle(ctx)
+      expect(ctx.response.status_code).to eq(200)
+    end
+
+    it "falls back to 200 for a zero-length suffix range bytes=-0" do
+      ctx = make_range_ctx("bytes=-0")
       proxy.handle(ctx)
       expect(ctx.response.status_code).to eq(200)
     end

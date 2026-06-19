@@ -1,4 +1,5 @@
 require "base64"
+require "crypto/subtle"
 
 module AptLarder
   module Admin
@@ -48,9 +49,11 @@ module AptLarder
       end
 
       # Returns `true` when the API token matches, or when no token is configured.
+      # Uses a constant-time comparison to avoid leaking the token via timing.
       private def api_authorized?(req : HTTP::Request) : Bool
         return true if @config.api_token.empty?
-        req.headers["Authorization"]? == "Bearer #{@config.api_token}"
+        provided = req.headers["Authorization"]? || ""
+        Crypto::Subtle.constant_time_compare(provided, "Bearer #{@config.api_token}")
       end
 
       # Returns `true` when Basic Auth credentials match, or when no credentials
@@ -61,7 +64,11 @@ module AptLarder
         return false unless auth && auth.starts_with?("Basic ")
         decoded = Base64.decode_string(auth[6..]) rescue return false
         user, _, pass = decoded.partition(":")
-        user == @config.ui_user && pass == @config.ui_password
+        # Compare both fields unconditionally (no && short-circuit) so the
+        # response time does not reveal which of the two was wrong.
+        user_ok = Crypto::Subtle.constant_time_compare(user, @config.ui_user)
+        pass_ok = Crypto::Subtle.constant_time_compare(pass, @config.ui_password)
+        user_ok && pass_ok
       end
     end
   end
