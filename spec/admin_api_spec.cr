@@ -43,7 +43,7 @@ Spectator.describe AptLarder::Admin::Api do
       expect(ctx.response.status_code).to eq(200)
       json = JSON.parse(response_body(ctx))
       expect(json["hits"].as_i64).to eq(0)
-      expect(json.as_h.keys.sort!).to eq(["bytes", "errors", "hits", "misses", "revalidations"])
+      expect(json.as_h.keys.sort!).to eq(["bytes", "errors", "hits", "misses", "revalidations", "tunnels"])
     end
   end
 

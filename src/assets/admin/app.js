@@ -45,6 +45,7 @@
       document.getElementById('stat-bytes').textContent = fmt(s.bytes);
       document.getElementById('stat-errors').textContent = s.errors.toLocaleString();
       document.getElementById('stat-reval').textContent = s.revalidations.toLocaleString();
+      document.getElementById('stat-tunnels').textContent = (s.tunnels || 0).toLocaleString();
     } catch (e) { console.error('stats fetch failed', e); }
   }
   refreshStats();

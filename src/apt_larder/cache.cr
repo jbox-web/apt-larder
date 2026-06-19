@@ -133,6 +133,18 @@ module AptLarder
         Log.warn { "integrity check failed: #{key}" }
         false
       end
+    rescue File::Error
+      # The file or its sidecar disappeared between the existence check and the
+      # read/hash (e.g. concurrent eviction). Treat as invalid so the caller
+      # re-downloads instead of letting the exception escape onto the hot path.
+      false
+    end
+
+    # Returns `true` if *key*'s SHA256 has already been verified this session.
+    # O(1) and does no disk I/O: used as a fast pre-check before the
+    # single-flight so the expensive `valid?` hashing runs at most once per key.
+    def verified?(key : String) : Bool
+      @mutex.synchronize { @verified.includes?(key) }
     end
 
     # Removes the file and its `.sha256` sidecar from disk and clears all

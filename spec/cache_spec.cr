@@ -152,6 +152,24 @@ Spectator.describe AptLarder::Cache do
       File.write(File.join(tmp_dir, "pkg.deb.sha256"), "deadbeef")
       expect(cache.valid?("pkg.deb")).to be_true
     end
+
+    # The hot path calls valid? outside any File::Error rescue, so a file that
+    # vanishes mid-check (concurrent eviction) must degrade to false, not raise.
+    it "returns false instead of raising when the file disappears mid-check" do
+      plant("pkg.deb", "hello")
+      # data file gone but sidecar remains — sha256_of would raise File::Error
+      File.delete(File.join(tmp_dir, "pkg.deb"))
+      expect(cache.valid?("pkg.deb")).to be_false
+    end
+  end
+
+  describe "#verified?" do
+    it "is false before verification and true after a successful valid?" do
+      plant("pkg.deb", "hello")
+      expect(cache.verified?("pkg.deb")).to be_false
+      cache.valid?("pkg.deb")
+      expect(cache.verified?("pkg.deb")).to be_true
+    end
   end
 
   describe "#invalidate" do

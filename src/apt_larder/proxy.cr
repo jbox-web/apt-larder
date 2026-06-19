@@ -28,8 +28,9 @@ module AptLarder
     end
 
     # Carries the leader's result to all concurrent waiters for the same key.
-    # The leader writes before channel.close; waiters read after — safe under
-    # Crystal's cooperative scheduler (no yield between write and close).
+    # Safety comes from the happens-before edge between the leader's
+    # `channel.close` and each waiter's `channel.receive?`: the leader writes
+    # `value`/`status` before closing, so every woken waiter observes them.
     # *status* is the HTTP status code to return to the client on error
     # (upstream 404 is passed through; gateway errors use 502).
     private class ResultRef
@@ -70,6 +71,7 @@ module AptLarder
       @stat_revalidations = Atomic(Int64).new(0)
       @stat_errors = Atomic(Int64).new(0)
       @stat_bytes = Atomic(Int64).new(0)
+      @stat_tunnels = Atomic(Int64).new(0)
     end
 
     # Returns cumulative counters since the process started.
@@ -79,13 +81,15 @@ module AptLarder
     # - *revalidations* — index-file requests answered with 304 Not Modified
     # - *errors* — requests that resulted in a 4xx or 5xx response
     # - *bytes* — total bytes written to clients
-    def stats : NamedTuple(hits: Int64, misses: Int64, revalidations: Int64, errors: Int64, bytes: Int64)
+    # - *tunnels* — CONNECT tunnels successfully established (HTTPS passthrough)
+    def stats : NamedTuple(hits: Int64, misses: Int64, revalidations: Int64, errors: Int64, bytes: Int64, tunnels: Int64)
       {
         hits:          @stat_hits.get,
         misses:        @stat_misses.get,
         revalidations: @stat_revalidations.get,
         errors:        @stat_errors.get,
         bytes:         @stat_bytes.get,
+        tunnels:       @stat_tunnels.get,
       }
     end
 
@@ -218,7 +222,10 @@ module AptLarder
     # to return to the client on error (upstream 4xx passed through, 502 for
     # gateway-level failures like timeouts or connection errors).
     private def ensure_cached(key : String, upstream : String) : {CacheResult, Int32}
-      return {CacheResult::Hit, 200} if cached_and_valid?(key)
+      # Fast O(1) pre-check only — the expensive integrity verification and
+      # repair (`cached_and_valid?`) is deferred to the single-flight leader so
+      # a burst of concurrent requests hashes the file at most once.
+      return {CacheResult::Hit, 200} if cached_fresh?(key)
 
       # All concurrent fibers for the same key share the same ResultRef object.
       # Each fiber acquires it here (before blocking), so it remains accessible
@@ -234,6 +241,20 @@ module AptLarder
       @sf_refs_mutex.synchronize { @sf_refs.delete(key) }
       result = ref.value || (was_leader ? CacheResult::Error : (@cache.exists?(key) ? CacheResult::Miss : CacheResult::Error))
       {result, ref.status}
+    end
+
+    # O(1) pre-check used before entering the single-flight: returns `true` only
+    # when the entry can be served without any disk hashing. Immutable entries
+    # qualify only once their SHA256 has already been verified this session;
+    # index entries qualify while still within the TTL window. Anything else
+    # falls through to the single-flight, where `cached_and_valid?` performs the
+    # heavy verification/repair exactly once per key.
+    private def cached_fresh?(key : String) : Bool
+      if immutable?(key)
+        @cache.verified?(key)
+      else
+        @cache.fresh?(key, @index_ttl_span)
+      end
     end
 
     # Returns `true` if the cached file is fresh enough to serve without
@@ -356,7 +377,9 @@ module AptLarder
         body_started = false
         reuse = false
         begin
-          client.get(uri.path, headers: headers) do |response|
+          # request_target preserves the query string (e.g. signed CDN URLs
+          # like ...?token=abc reached via a redirect); uri.path would drop it.
+          client.get(uri.request_target, headers: headers) do |response|
             body_started = true
             # block returns true if the connection is safe to reuse
             reuse = yield response
@@ -396,7 +419,8 @@ module AptLarder
           res.status = HTTP::Status::PARTIAL_CONTENT
           res.headers["Content-Range"] = "bytes #{first}-#{last}/#{total}"
           res.content_length = length
-          return length if head_only
+          # HEAD sets headers but writes no body — report 0 bytes written.
+          return 0_i64 if head_only
           file.seek(first)
           buf = Bytes.new(COPY_BUFFER_SIZE)
           remaining = length
@@ -409,7 +433,8 @@ module AptLarder
           length
         else
           res.content_length = total
-          return total if head_only
+          # HEAD sets headers but writes no body — report 0 bytes written.
+          return 0_i64 if head_only
           buffered_copy(file, res)
           total
         end
@@ -450,6 +475,9 @@ module AptLarder
     private def tunnel(req : HTTP::Request, res : HTTP::Server::Response, started_at : Time::Span) : Nil
       host, _, port_str = req.resource.rpartition(":")
       port = port_str.to_i? || 443
+      # Strip the brackets from IPv6 literals (e.g. "[::1]" -> "::1") so
+      # TCPSocket receives a bare address. No-op for regular hostnames.
+      host = host.lchop('[').rchop(']')
 
       upstream = TCPSocket.new(host, port, connect_timeout: @connect_timeout)
       upstream.read_timeout = @read_timeout
@@ -460,7 +488,10 @@ module AptLarder
       # handshake times out ("Error in the push function").
       res.headers.delete("Content-Type")
       res.upgrade do |client|
-        done = Channel(Nil).new
+        # Buffered for 2 so both relay fibers can report completion without a
+        # reader: we only need the first to know the tunnel is done, but the
+        # second must not block forever on send (which would leak the fiber).
+        done = Channel(Nil).new(2)
         buf = Bytes.new(16 * 1024)
         spawn do
           loop do
@@ -475,6 +506,7 @@ module AptLarder
         done.receive
         upstream.close rescue nil
       end
+      @stat_tunnels.add(1)
       Log.info { "#{client_ip(req.remote_address)}200 TUNNEL CONNECT #{req.resource}" }
     rescue ex
       res.status = HTTP::Status::BAD_GATEWAY

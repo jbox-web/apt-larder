@@ -393,6 +393,13 @@ Spectator.describe AptLarder::Proxy do
       expect(ctx.response.headers["Content-Length"]).to eq("5")
     end
 
+    it "HEAD does not count any bytes as served (no body written)" do
+      store("mirror/pool/main/pkg.deb", "12345")
+      ctx = make_ctx("HEAD", "/mirror/pool/main/pkg.deb")
+      proxy.handle(ctx)
+      expect(proxy.stats[:bytes]).to eq(0)
+    end
+
     # Integration test over a real TCP socket — exercises the sendfile(2) path
     # which is skipped when the response is backed by IO::Memory.
     it "serves a HIT correctly over a real TCP socket (exercises sendfile)" do

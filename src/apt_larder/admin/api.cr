@@ -71,6 +71,7 @@ module AptLarder
             j.field "revalidations", s[:revalidations]
             j.field "errors", s[:errors]
             j.field "bytes", s[:bytes]
+            j.field "tunnels", s[:tunnels]
           end
         end
       end
@@ -86,6 +87,7 @@ module AptLarder
           {"revalidations_total", "counter", "Total 304 Not Modified revalidations.", s[:revalidations]},
           {"errors_total", "counter", "Total requests that resulted in an error.", s[:errors]},
           {"bytes_served_total", "counter", "Total bytes written to clients from cache.", s[:bytes]},
+          {"tunnels_total", "counter", "Total CONNECT tunnels successfully established.", s[:tunnels]},
           {"cache_entries", "gauge", "Current number of files tracked in the cache.", entries.to_i64},
         }.each do |name, type, help, value|
           io << "# HELP apt_larder_#{name} #{help}\n"
