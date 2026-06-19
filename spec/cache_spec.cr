@@ -207,6 +207,23 @@ Spectator.describe AptLarder::Cache do
     end
   end
 
+  describe "#clear" do
+    it "deletes all files and sidecars and returns the count" do
+      store("a/pkg.deb", "x")
+      store("b/other.deb", "yy")
+      deleted = cache.clear
+      expect(deleted).to eq(2)
+      expect(cache.exists?("a/pkg.deb")).to be_false
+      expect(cache.exists?("b/other.deb")).to be_false
+      expect(File.exists?(File.join(tmp_dir, "a/pkg.deb.sha256"))).to be_false
+      expect(cache.entry_count).to eq(0)
+    end
+
+    it "returns zero on an empty cache" do
+      expect(cache.clear).to eq(0)
+    end
+  end
+
   describe "#evict_stale" do
     it "returns zero counts when the cache is empty" do
       deleted, freed = cache.evict_stale(7.days)

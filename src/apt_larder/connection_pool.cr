@@ -15,28 +15,53 @@ module AptLarder
     # without risking file-descriptor exhaustion.
     IDLE_PER_HOST = 4
 
+    # Pooled connections idle longer than this are assumed dead — the upstream
+    # may have closed its keep-alive — and are discarded on checkout instead of
+    # risking a wasted round-trip on a stale socket. Kept below the typical
+    # server keep-alive timeout (60s).
+    IDLE_TTL = 50.seconds
+
+    # A pooled connection paired with the monotonic instant it went idle.
+    private record Entry, client : HTTP::Client, idle_since : Time::Span
+
     def initialize
-      @idle = {} of String => Array(HTTP::Client)
+      @idle = {} of String => Array(Entry)
       @mutex = Mutex.new
     end
 
     # Returns *client* to the pool for *uri* so it can be reused.
     #
     # If the pool for this host already holds `IDLE_PER_HOST` connections,
-    # *client* is closed immediately rather than queued.
-    def checkin(uri : URI, client : HTTP::Client) : Nil
+    # *client* is closed immediately rather than queued. *now* is injectable
+    # for tests; production callers use the default monotonic clock.
+    def checkin(uri : URI, client : HTTP::Client, now : Time::Span = Time.monotonic) : Nil
       key = host_key(uri)
       @mutex.synchronize do
-        pool = (@idle[key] ||= [] of HTTP::Client)
-        pool.size < IDLE_PER_HOST ? pool.push(client) : client.close
+        pool = (@idle[key] ||= [] of Entry)
+        pool.size < IDLE_PER_HOST ? pool.push(Entry.new(client, now)) : client.close
       end
     end
 
     # Returns a pooled connection for *uri*, or creates a new one if none is
-    # available.
-    def checkout(uri : URI) : HTTP::Client
+    # available. Connections idle beyond `IDLE_TTL` are closed and skipped.
+    # The host bucket is dropped once empty so the table cannot grow unbounded.
+    def checkout(uri : URI, now : Time::Span = Time.monotonic) : HTTP::Client
       key = host_key(uri)
-      @mutex.synchronize { @idle[key]?.try(&.pop?) } || HTTP::Client.new(uri)
+      reused = @mutex.synchronize do
+        pool = @idle[key]?
+        next nil unless pool
+        client = nil
+        while entry = pool.pop?
+          if now - entry.idle_since <= IDLE_TTL
+            client = entry.client
+            break
+          end
+          entry.client.close rescue nil
+        end
+        @idle.delete(key) if pool.empty?
+        client
+      end
+      reused || HTTP::Client.new(uri)
     end
 
     # Closes *client* and discards it. Silently ignores errors (e.g. already

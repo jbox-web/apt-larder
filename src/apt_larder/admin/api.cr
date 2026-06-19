@@ -125,15 +125,9 @@ module AptLarder
       end
 
       private def handle_flush(res : HTTP::Server::Response) : Nil
-        # Single scan: collect all keys then invalidate in one pass.
-        # Count invalidations actually performed rather than trusting :total,
-        # which could differ if entries disappear between scan and invalidation.
-        result = @cache.entries(per_page: Int32::MAX)
-        deleted = 0
-        result[:entries].each do |entry|
-          @cache.invalidate(entry.key)
-          deleted += 1
-        end
+        # Cache#clear deletes in a single scan without materializing per-entry
+        # structs, so it stays cheap even on a very large cache.
+        deleted = @cache.clear
         json(res) { |j| j.object { j.field "deleted", deleted } }
       end
 

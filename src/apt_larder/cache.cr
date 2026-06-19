@@ -169,6 +169,31 @@ module AptLarder
       File.delete("#{path}.sha256") rescue nil
     end
 
+    # Removes every cached entry (data files and their `.sha256` sidecars) in a
+    # single directory scan and clears all in-memory state. Returns the number
+    # of data files deleted.
+    #
+    # Unlike iterating `entries` + `invalidate`, this builds no per-entry structs
+    # and holds the whole listing only as a glob stream, so it stays cheap on
+    # very large caches. Best-effort under concurrency: entries added while the
+    # scan runs may survive (acceptable for an admin flush).
+    def clear : Int32
+      deleted = 0
+      Dir.glob("#{@root}/**/*") do |path|
+        next if path.ends_with?(".sha256")
+        next unless File.file?(path)
+        File.delete(path) rescue next
+        File.delete("#{path}.sha256") rescue nil
+        deleted += 1
+      end
+      @mutex.synchronize do
+        @known.clear
+        @mtime_cache.clear
+        @verified.clear
+      end
+      deleted
+    end
+
     # Deletes every cached file whose mtime is older than *max_age*.
     #
     # Skips `.sha256` sidecar files (they are removed together with their

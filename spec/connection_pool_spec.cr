@@ -59,6 +59,31 @@ Spectator.describe AptLarder::ConnectionPool do
     end
   end
 
+  describe "idle expiry" do
+    it "discards a connection idle longer than IDLE_TTL and returns a fresh one" do
+      t0 = Time.monotonic
+      client = HTTP::Client.new(uri)
+      pool.checkin(uri, client, now: t0)
+      later = t0 + AptLarder::ConnectionPool::IDLE_TTL + 1.second
+      expect(pool.checkout(uri, now: later).object_id).not_to eq(client.object_id)
+    end
+
+    it "reuses a connection still within IDLE_TTL" do
+      t0 = Time.monotonic
+      client = HTTP::Client.new(uri)
+      pool.checkin(uri, client, now: t0)
+      within = t0 + AptLarder::ConnectionPool::IDLE_TTL - 1.second
+      expect(pool.checkout(uri, now: within).object_id).to eq(client.object_id)
+    end
+
+    it "drops the host bucket once drained" do
+      client = HTTP::Client.new(uri)
+      pool.checkin(uri, client)
+      pool.checkout(uri)
+      expect(pool.@idle.empty?).to be_true
+    end
+  end
+
   describe "#discard" do
     it "does not raise on an open client" do
       expect { pool.discard(HTTP::Client.new(uri)) }.not_to raise_error
