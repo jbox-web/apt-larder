@@ -38,6 +38,13 @@ require "./apt_larder/admin/*"
 module AptLarder
   Log = ::Log.for("apt-larder")
 
+  # Serialises log-state mutation with teardown. `reopen_log_file!` runs on the
+  # SIGUSR1 handler's own fiber, concurrently with the shutdown path's
+  # `close_log_file!`; both touch `@@log_file`/`@@logger`. Mirrors the `@@mutex`
+  # guard around systemd's `@@socket`. Boot-time `setup_log!` runs on the main
+  # fiber before any spawn, so it needs no lock.
+  @@log_mutex = Mutex.new
+
   VERSION = {{ `shards version #{__DIR__}`.chomp.stringify }}
   GIT_REF = {{ `git log -n 1 --format="%H" | head -c 8`.chomp.stringify }}
 
@@ -64,17 +71,24 @@ module AptLarder
   # Closes the log file if logging to a file (no-op when writing to stdout).
   # Called from `CLI::Server#run`'s ensure block after `Server#start` returns.
   def self.close_log_file!
-    @@log_file.try(&.close) unless log_to_stdout?
+    @@log_mutex.synchronize do
+      @@log_file.try(&.close) unless log_to_stdout?
+    end
   end
 
   # Reopens the log file after log rotation (`SIGUSR1`).
   def self.reopen_log_file!
-    # Both must be reset: @@log_file to open the new file, @@logger to
-    # rebuild the backend pointing at it. Resetting only one leaves a
-    # backend writing to the old, already-closed file descriptor.
-    @@log_file = nil
-    @@logger = nil
-    setup_log!
+    @@log_mutex.synchronize do
+      # Close the old descriptor before dropping it — otherwise every rotation
+      # leaks the previous file's fd. No-op when writing to stdout.
+      @@log_file.try(&.close) unless log_to_stdout?
+      # Both must be reset: @@log_file to open the new file, @@logger to
+      # rebuild the backend pointing at it. Resetting only one leaves a
+      # backend writing to the old, already-closed file descriptor.
+      @@log_file = nil
+      @@logger = nil
+      setup_log!
+    end
   end
 
   private def self.default_config
