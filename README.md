@@ -272,7 +272,10 @@ A ready-to-use unit file is provided in [`extra/apt-larder.service`](extra/READM
 
 ## Development
 
-Prerequisites: Crystal ≥ 1.18, [mise](https://mise.jdx.dev/).
+Prerequisites: [mise](https://mise.jdx.dev/). The toolchain is pinned to
+Crystal **1.18.2** in `mise.toml` — always drive the compiler through `mise` so
+this exact version is used. A newer `crystal` on your `PATH` may compile code
+that relies on post-1.18 APIs and then break the CI/Docker build.
 
 ```sh
 mise dev:deps      # install shards
@@ -283,10 +286,10 @@ mise dev:ameba     # lint
 mise dev:format    # format source
 ```
 
-Run a single spec file:
+Run a single spec file (extra args are forwarded to the task):
 
 ```sh
-crystal spec spec/proxy_spec.cr
+mise dev:spec spec/proxy_spec.cr
 ```
 
 ## Architecture

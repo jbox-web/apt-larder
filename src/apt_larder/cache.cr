@@ -21,6 +21,11 @@ module AptLarder
       @known = Set(String).new
       @mtime_cache = {} of String => Time
       @verified = Set(String).new
+      # Authoritative entry gauge, seeded from a one-time count-only disk scan so
+      # the Prometheus `cache_entries` gauge reflects a warm cache from boot
+      # instead of starting at 0 and climbing as requests arrive. O(1) memory
+      # (a single integer, no Set), and re-anchored on every eviction pass.
+      @entry_count = count_files_on_disk
     end
 
     # Returns `true` if a file for *key* exists on disk.
@@ -100,6 +105,10 @@ module AptLarder
         # so the entry is re-downloaded. The reverse order could leave a data
         # file with no sidecar, which valid? would trust and serve unverified.
         File.write("#{dest}.sha256", hash)
+        # Detect an overwrite before publishing so the entry gauge counts a
+        # given key once. Single-flight guarantees no concurrent store for the
+        # same key, so this check is race-free.
+        is_new = !File.exists?(dest)
         File.rename(tmp, dest)
         now = Time.utc
         @mutex.synchronize do
@@ -107,6 +116,7 @@ module AptLarder
           @mtime_cache[key] = now
           # just written and hashed — no need to re-verify on first serve
           @verified.add(key)
+          @entry_count += 1 if is_new
         end
       rescue ex
         File.delete(tmp) if File.exists?(tmp)
@@ -165,8 +175,12 @@ module AptLarder
         @verified.delete(key)
       end
       path = path_for(key)
-      File.delete(path) rescue nil
-      File.delete("#{path}.sha256") rescue nil
+      # The delete result is the source of truth for the gauge: on a concurrent
+      # double-invalidate exactly one call actually removes the file (the other
+      # raises File::Error), so the count is decremented exactly once.
+      data_deleted = delete_file?(path)
+      delete_file?("#{path}.sha256")
+      @mutex.synchronize { @entry_count -= 1 if data_deleted }
     end
 
     # Removes every cached entry (data files and their `.sha256` sidecars) in a
@@ -190,6 +204,7 @@ module AptLarder
         @known.clear
         @mtime_cache.clear
         @verified.clear
+        @entry_count = 0
       end
       deleted
     end
@@ -219,6 +234,11 @@ module AptLarder
         candidates << {key, info.size, info.modification_time}
         total_bytes += info.size
       end
+
+      # Re-anchor the gauge to the authoritative on-disk count seen by this scan,
+      # correcting any drift accumulated since boot. The invalidate calls below
+      # each decrement it further as files are removed.
+      @mutex.synchronize { @entry_count = candidates.size }
 
       deleted = 0
       freed = 0_i64
@@ -260,11 +280,14 @@ module AptLarder
       evict(limit_bytes: limit_bytes)
     end
 
-    # Returns the number of files currently tracked in the in-memory index.
-    # Fast (no disk scan); may be slightly lower than actual disk count if
-    # files were added externally.
+    # Returns the number of cached data files.
+    #
+    # Fast (no disk scan): maintained incrementally by `store`/`invalidate`/
+    # `clear`, seeded from disk at construction, and re-anchored to the exact
+    # on-disk count on every `evict` pass. May drift slightly between eviction
+    # passes if files are added or removed out-of-band.
     def entry_count : Int32
-      @mutex.synchronize { @known.size }
+      @mutex.synchronize { @entry_count }
     end
 
     # Returns the byte size of the cached file for *key*.
@@ -310,6 +333,27 @@ module AptLarder
 
     private def immutable?(key : String) : Bool
       AptLarder.immutable?(key)
+    end
+
+    # Deletes *path*, returning `true` only if this call actually removed the
+    # file. A missing file (already gone, or removed by a concurrent caller)
+    # yields `false` instead of raising.
+    private def delete_file?(path : String) : Bool
+      File.delete(path)
+      true
+    rescue File::Error
+      false
+    end
+
+    # Counts data files (excluding `.sha256` sidecars) under the cache root in a
+    # single streaming glob. O(1) memory; called once at construction.
+    private def count_files_on_disk : Int32
+      count = 0
+      Dir.glob("#{@root}/**/*") do |path|
+        next if path.ends_with?(".sha256")
+        count += 1 if File.file?(path)
+      end
+      count
     end
 
     private def path_for(key : String) : String

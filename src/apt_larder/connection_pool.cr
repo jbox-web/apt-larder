@@ -36,10 +36,18 @@ module AptLarder
     # for tests; production callers use the default monotonic clock.
     def checkin(uri : URI, client : HTTP::Client, now : Time::Span = Time.monotonic) : Nil
       key = host_key(uri)
-      @mutex.synchronize do
+      # Close outside the lock: client.close performs a socket close(2) syscall,
+      # which should not serialise other fibers' checkout/checkin.
+      evicted = @mutex.synchronize do
         pool = (@idle[key] ||= [] of Entry)
-        pool.size < IDLE_PER_HOST ? pool.push(Entry.new(client, now)) : client.close
+        if pool.size < IDLE_PER_HOST
+          pool.push(Entry.new(client, now))
+          nil
+        else
+          client
+        end
       end
+      evicted.try(&.close)
     end
 
     # Returns a pooled connection for *uri*, or creates a new one if none is
@@ -47,6 +55,9 @@ module AptLarder
     # The host bucket is dropped once empty so the table cannot grow unbounded.
     def checkout(uri : URI, now : Time::Span = Time.monotonic) : HTTP::Client
       key = host_key(uri)
+      # Collect expired connections and close them after releasing the lock —
+      # a socket close(2) must not serialise other fibers on the pool.
+      stale = [] of HTTP::Client
       reused = @mutex.synchronize do
         pool = @idle[key]?
         next nil unless pool
@@ -56,11 +67,12 @@ module AptLarder
             client = entry.client
             break
           end
-          entry.client.close rescue nil
+          stale << entry.client
         end
         @idle.delete(key) if pool.empty?
         client
       end
+      stale.each { |client| client.close rescue nil }
       reused || HTTP::Client.new(uri)
     end
 

@@ -274,6 +274,21 @@ Spectator.describe AptLarder::Cache do
       store("b.deb", "y")
       expect(cache.entry_count).to eq(2)
     end
+
+    it "counts files already on disk at construction" do
+      # Pre-populate the directory before the cache is built so the count is
+      # seeded from disk, not only from stores made during this session.
+      FileUtils.mkdir_p(tmp_dir)
+      File.write(File.join(tmp_dir, "preexisting.deb"), "data")
+      File.write(File.join(tmp_dir, "preexisting.deb.sha256"), "deadbeef")
+      expect(cache.entry_count).to eq(1)
+    end
+
+    it "does not double-count when an existing key is re-stored" do
+      store("a.deb", "x")
+      store("a.deb", "xx")
+      expect(cache.entry_count).to eq(1)
+    end
   end
 
   describe "#evict (combined)" do
