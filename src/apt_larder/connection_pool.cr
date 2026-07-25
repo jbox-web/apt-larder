@@ -22,7 +22,7 @@ module AptLarder
     IDLE_TTL = 50.seconds
 
     # A pooled connection paired with the monotonic instant it went idle.
-    private record Entry, client : HTTP::Client, idle_since : Time::Span
+    private record Entry, client : HTTP::Client, idle_since : Time::Instant
 
     def initialize
       @idle = {} of String => Array(Entry)
@@ -34,7 +34,7 @@ module AptLarder
     # If the pool for this host already holds `IDLE_PER_HOST` connections,
     # *client* is closed immediately rather than queued. *now* is injectable
     # for tests; production callers use the default monotonic clock.
-    def checkin(uri : URI, client : HTTP::Client, now : Time::Span = Time.monotonic) : Nil
+    def checkin(uri : URI, client : HTTP::Client, now : Time::Instant = Time.instant) : Nil
       key = host_key(uri)
       # Close outside the lock: client.close performs a socket close(2) syscall,
       # which should not serialise other fibers' checkout/checkin.
@@ -53,7 +53,7 @@ module AptLarder
     # Returns a pooled connection for *uri*, or creates a new one if none is
     # available. Connections idle beyond `IDLE_TTL` are closed and skipped.
     # The host bucket is dropped once empty so the table cannot grow unbounded.
-    def checkout(uri : URI, now : Time::Span = Time.monotonic) : HTTP::Client
+    def checkout(uri : URI, now : Time::Instant = Time.instant) : HTTP::Client
       key = host_key(uri)
       # Collect expired connections and close them after releasing the lock —
       # a socket close(2) must not serialise other fibers on the pool.

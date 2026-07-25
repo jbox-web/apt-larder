@@ -71,9 +71,9 @@ module AptLarder
       # the wait so a single stuck request (slow client, huge .deb) cannot block
       # shutdown forever. systemd's TimeoutStopSec would otherwise SIGKILL us.
       SystemD.stopping
-      deadline = Time.monotonic + SHUTDOWN_DRAIN_TIMEOUT
+      deadline = Time.instant + SHUTDOWN_DRAIN_TIMEOUT
       while @in_flight.get > 0
-        if Time.monotonic >= deadline
+        if Time.instant >= deadline
           Log.warn { "shutdown drain timed out with #{@in_flight.get} request(s) still in flight" }
           break
         end

@@ -273,9 +273,9 @@ A ready-to-use unit file is provided in [`extra/apt-larder.service`](extra/READM
 ## Development
 
 Prerequisites: [mise](https://mise.jdx.dev/). The toolchain is pinned to
-Crystal **1.18.2** in `mise.toml` — always drive the compiler through `mise` so
+Crystal **1.20.3** in `mise.toml` — always drive the compiler through `mise` so
 this exact version is used. A newer `crystal` on your `PATH` may compile code
-that relies on post-1.18 APIs and then break the CI/Docker build.
+that relies on post-1.20 APIs and then break the CI/Docker build.
 
 ```sh
 mise dev:deps      # install shards

@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Code, commentaires et descriptions de tests en anglais.
 - Named arguments sur les appels complexes (ex: `Proxy.new(..., max_redirects: 5, index_ttl: 0, ...)`).
 - Après chaque modification, toujours lancer : `mise dev:check` (équivalent à `mise dev:build && mise dev:ameba && mise dev:spec`).
-- **Toolchain épinglée : Crystal 1.18.2 (voir `mise.toml`).** Ne JAMAIS invoquer `crystal`/`shards` nu — le binaire système peut être une version plus récente et donner de faux positifs (une API absente en 1.18 compile en 1.20, ex. `Sync::Mutex`). Toujours passer par les tâches `mise` (`dev:build`, `dev:spec`, `dev:check`, …) ; elles utilisent la toolchain épinglée et transmettent les arguments positionnels (ex. `mise dev:spec spec/foo_spec.cr`). Ne pas utiliser d'API introduite après 1.18.
+- **Toolchain épinglée : Crystal 1.20.3 (voir `mise.toml`).** Ne JAMAIS invoquer `crystal`/`shards` nu — le binaire système peut être une version différente et donner de faux positifs (une API absente en 1.20 peut compiler avec une version plus récente). Toujours passer par les tâches `mise` (`dev:build`, `dev:spec`, `dev:check`, …) ; elles utilisent la toolchain épinglée et transmettent les arguments positionnels (ex. `mise dev:spec spec/foo_spec.cr`). Ne pas utiliser d'API introduite après 1.20.
 
 ## What this is
 

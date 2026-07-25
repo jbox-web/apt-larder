@@ -14,7 +14,7 @@ shards:
 
   spectator:
     git: https://gitlab.com/arctic-fox/spectator.git
-    version: 0.12.2
+    version: 0.12.4
 
   tallboy:
     git: https://github.com/epoch/tallboy.git

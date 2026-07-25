@@ -1,5 +1,9 @@
+[settings]
+aqua.registries = ["https://github.com/jbox-web/aqua-registry"]
+
 [tools]
-crystal = "1.18.2"
+crystal = "1.20.3"
+"aqua:elbywan/crystalline" = "0.18.0"
 
 [vars]
 APP_NAME    = "apt-larder"
@@ -40,7 +44,7 @@ run = "rm -rf docs && crystal doc"
 
 [tasks."dev:ameba"]
 description = "Run static code analysis"
-run = "bin/ameba"
+run = "timeout 180 bin/ameba"
 
 [tasks."dev:check"]
 description = "Build, lint and test in one shot"

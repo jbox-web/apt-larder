@@ -100,7 +100,7 @@ module AptLarder
     # resource is cached (downloading it if necessary) and streams it to the
     # client. Returns 502 on upstream failure or cache loss.
     def handle(ctx : HTTP::Server::Context) : Nil
-      started_at = Time.monotonic
+      started_at = Time.instant
       req = ctx.request
       res = ctx.response
 
@@ -487,7 +487,7 @@ module AptLarder
     # bytes in both directions until either side closes. HTTPS traffic is not
     # inspected or cached — TLS is negotiated end-to-end between APT and the
     # upstream mirror.
-    private def tunnel(req : HTTP::Request, res : HTTP::Server::Response, started_at : Time::Span) : Nil
+    private def tunnel(req : HTTP::Request, res : HTTP::Server::Response, started_at : Time::Instant) : Nil
       # Parses host:port, including bracketed IPv6 literals — see helpers.cr.
       host, port = AptLarder.parse_connect_target(req.resource)
 
@@ -539,7 +539,7 @@ module AptLarder
 
     # Increments the appropriate stat counter and emits one access log line
     # (suppressed for HIT/REVAL in quiet mode).
-    private def log_access(method : String, key : String, status : Int32, started_at : Time::Span, cache_result : CacheResult, bytes : Int64? = nil, client : Socket::Address? = nil) : Nil
+    private def log_access(method : String, key : String, status : Int32, started_at : Time::Instant, cache_result : CacheResult, bytes : Int64? = nil, client : Socket::Address? = nil) : Nil
       case cache_result
       in .hit?         then @stat_hits.add(1)
       in .miss?        then @stat_misses.add(1)
@@ -548,7 +548,7 @@ module AptLarder
       end
       @stat_bytes.add(bytes) if bytes
       return if @quiet && (cache_result.hit? || cache_result.revalidated?)
-      elapsed_ms = (Time.monotonic - started_at).total_milliseconds
+      elapsed_ms = started_at.elapsed.total_milliseconds
       elapsed = elapsed_ms >= 1000 ? "#{(elapsed_ms / 1000).round(1)}s" : "#{elapsed_ms.round}ms"
       tag = case cache_result
             in .hit?         then "HIT  "

@@ -61,7 +61,7 @@ Spectator.describe AptLarder::ConnectionPool do
 
   describe "idle expiry" do
     it "discards a connection idle longer than IDLE_TTL and returns a fresh one" do
-      t0 = Time.monotonic
+      t0 = Time.instant
       client = HTTP::Client.new(uri)
       pool.checkin(uri, client, now: t0)
       later = t0 + AptLarder::ConnectionPool::IDLE_TTL + 1.second
@@ -69,7 +69,7 @@ Spectator.describe AptLarder::ConnectionPool do
     end
 
     it "reuses a connection still within IDLE_TTL" do
-      t0 = Time.monotonic
+      t0 = Time.instant
       client = HTTP::Client.new(uri)
       pool.checkin(uri, client, now: t0)
       within = t0 + AptLarder::ConnectionPool::IDLE_TTL - 1.second
