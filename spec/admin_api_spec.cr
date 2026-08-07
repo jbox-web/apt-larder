@@ -2,7 +2,7 @@ require "./spec_helper"
 require "file_utils"
 
 Spectator.describe AptLarder::Admin::Api do
-  let(tmp_dir) { "/tmp/apt-larder-admin-#{Random::Secure.hex(4)}" }
+  let(tmp_dir) { spec_tmp_dir("admin") }
   let(cache) { AptLarder::Cache.new(tmp_dir) }
   let(sf) { AptLarder::SingleFlight.new }
   let(proxy) { AptLarder::Proxy.new(cache, sf, max_redirects: 5, index_ttl: 5, connect_timeout: 10, read_timeout: 30) }

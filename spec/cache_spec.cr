@@ -3,7 +3,7 @@ require "file_utils"
 require "digest/sha256"
 
 Spectator.describe AptLarder::Cache do
-  let(tmp_dir) { "/tmp/apt-larder-cache-#{Random::Secure.hex(4)}" }
+  let(tmp_dir) { spec_tmp_dir("cache") }
   subject(cache) { AptLarder::Cache.new(tmp_dir) }
 
   after_each { FileUtils.rm_rf(tmp_dir) }

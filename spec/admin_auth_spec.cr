@@ -3,7 +3,7 @@ require "file_utils"
 require "base64"
 
 Spectator.describe "Admin auth middleware" do
-  let(tmp_dir) { "/tmp/apt-larder-auth-#{Random::Secure.hex(4)}" }
+  let(tmp_dir) { spec_tmp_dir("auth") }
   let(cache) { AptLarder::Cache.new(tmp_dir) }
   let(sf) { AptLarder::SingleFlight.new }
   let(proxy) { AptLarder::Proxy.new(cache, sf, max_redirects: 5, index_ttl: 5, connect_timeout: 10, read_timeout: 30) }

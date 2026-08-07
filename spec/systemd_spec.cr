@@ -6,7 +6,7 @@ Spectator.describe AptLarder::SystemD do
   after_each { AptLarder::SystemD.reset_socket }
 
   private def with_notify_socket(& : String, Socket -> T) : T forall T
-    dir = "/tmp/apt-larder-sd-#{Random::Secure.hex(4)}"
+    dir = spec_tmp_dir("sd")
     Dir.mkdir_p(dir)
     path = File.join(dir, "notify.sock")
     server = Socket.new(Socket::Family::UNIX, Socket::Type::DGRAM)

@@ -2,7 +2,7 @@ require "./spec_helper"
 require "file_utils"
 
 Spectator.describe AptLarder::Proxy do
-  let(tmp_dir) { "/tmp/apt-larder-proxy-#{Random::Secure.hex(4)}" }
+  let(tmp_dir) { spec_tmp_dir("proxy") }
   let(cache) { AptLarder::Cache.new(tmp_dir) }
   let(sf) { AptLarder::SingleFlight.new }
   let(proxy) { AptLarder::Proxy.new(cache, sf, max_redirects: 5, index_ttl: 5, connect_timeout: 10, read_timeout: 30) }
@@ -583,6 +583,35 @@ Spectator.describe AptLarder::Proxy do
       expect(cache.exists?("127.0.0.1:#{port}/redirect")).to be_true
     end
 
+    # Real mirrors (nginx http->https) answer 301 with an HTML body. If that
+    # body is left in the socket, the connection is checked back into the pool
+    # still holding it, and the next request on that connection reads the HTML
+    # as a status line — "Invalid HTTP response", raised before any round-trip.
+    it "drains the 301 body so the pooled connection stays usable" do
+      port = 0
+      server = HTTP::Server.new do |ctx|
+        if ctx.request.path == "/redirect"
+          ctx.response.headers["Location"] = "http://127.0.0.1:#{port}/final/pkg.deb"
+          ctx.response.status = HTTP::Status::MOVED_PERMANENTLY
+          ctx.response.print("<html>\n<head><title>301 Moved Permanently</title></head>\n</html>\n")
+        else
+          ctx.response.content_type = "application/octet-stream"
+          ctx.response.print("final content")
+        end
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      port = addr.port
+      spawn { server.listen }
+      Fiber.yield
+
+      ctx = make_ctx("GET", "http://127.0.0.1:#{port}/redirect")
+      proxy.handle(ctx)
+      server.close
+
+      expect(ctx.response.status_code).to eq(200)
+      expect(cache.exists?("127.0.0.1:#{port}/redirect")).to be_true
+    end
+
     it "returns 502 when max_redirects is exceeded" do
       port = 0
       server = HTTP::Server.new do |ctx|
@@ -734,6 +763,57 @@ Spectator.describe AptLarder::Proxy do
       tcp.close
 
       expect(ctx.response.status_code).to eq(200)
+    end
+
+    # A pooled connection can be poisoned rather than dead: leftover bytes make
+    # the next response unparseable, which the stdlib reports as a bare
+    # Exception ("Invalid HTTP response"), not an IO::Error. The retry must
+    # cover that too — the failure happens before any body byte is yielded, so
+    # the request is just as replayable as on a dead socket.
+    it "retries once when the pooled connection yields an unparseable response" do
+      conn_num = Atomic(Int32).new(0)
+
+      tcp = TCPServer.new("127.0.0.1", 0)
+      port = tcp.local_address.port
+
+      spawn do
+        while sock = tcp.accept?
+          n = conn_num.add(1) + 1
+          csock = sock
+          spawn do
+            begin
+              if n == 1
+                # Request 1: valid keep-alive response, so the proxy pools this
+                # connection. Request 2 on it: a line that cannot be a status
+                # line, exactly what leftover HTML looks like.
+                while (line = csock.gets) && line.chomp.size > 0; end
+                csock << "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 4\r\nConnection: keep-alive\r\n\r\ndata"
+                while (line = csock.gets) && line.chomp.size > 0; end
+                csock << "<html>\r\n"
+                csock.close
+              else
+                while (line = csock.gets) && line.chomp.size > 0; end
+                csock << "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 5\r\nConnection: close\r\n\r\nretry"
+                csock.close
+              end
+            rescue
+              csock.close rescue nil
+            end
+          end
+        end
+      end
+      Fiber.yield
+
+      # Request 1 — connection goes back into the pool.
+      proxy.handle(make_ctx("GET", "http://127.0.0.1:#{port}/pool/main/a.deb"))
+
+      # Request 2 — checks out the poisoned connection, fails to parse, retries.
+      ctx = make_ctx("GET", "http://127.0.0.1:#{port}/pool/main/b.deb")
+      proxy.handle(ctx)
+      tcp.close
+
+      expect(ctx.response.status_code).to eq(200)
+      expect(cache.exists?("127.0.0.1:#{port}/pool/main/b.deb")).to be_true
     end
   end
 

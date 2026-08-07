@@ -328,10 +328,11 @@ module AptLarder
           # no body — connection is clean
           true
         else
-          response.body
           Log.warn { "upstream #{response.status_code} for #{upstream}" }
           result = {CacheResult::Error, response.status_code}
-          # non-2xx body drain is unreliable — discard the connection
+          # The error body is left unread on purpose: an upstream error page can
+          # be arbitrarily large or slow, so draining it to save one handshake is
+          # a bad trade. Returning false discards the connection instead.
           false
         end
       end
@@ -362,8 +363,14 @@ module AptLarder
           if response.status_code.in?(301, 302, 303, 307, 308) &&
              (location = response.headers["Location"]?)
             follow = URI.parse(current).resolve(location).to_s
-            # drain redirect body to allow connection reuse
-            response.body
+            # Drain the redirect body so the connection can be reused. It must
+            # go through body_io: in the block form of HTTP::Client#get the
+            # response carries body_io and `body` is nil, so `response.body`
+            # returns "" without reading a single byte off the socket. A 301
+            # with an HTML body (nginx http->https) would then be checked back
+            # into the pool still holding it, and the next request on that
+            # connection would parse the HTML as a status line.
+            response.body_io?.try(&.skip_to_end)
             true
           else
             # propagates the Bool returned by download's block
@@ -380,9 +387,18 @@ module AptLarder
     end
 
     # Borrows a connection from the pool, runs the block, returns the connection.
-    # On IO::Error BEFORE the body starts (stale pooled connection), retries once
-    # with a fresh connection. IO errors during body transfer (disk full, etc.)
-    # are not retried as they do not originate from the upstream connection.
+    #
+    # Any failure BEFORE the body starts is retried once on a fresh connection.
+    # The cut-off is `body_started`, not the exception class: everything raised
+    # up to that point comes from connecting, sending, or parsing the response
+    # head — all symptoms of a pooled connection gone bad (closed by the peer,
+    # or left holding bytes from a previous exchange), and all replayable since
+    # the request is a GET. A dead socket surfaces as an IO::Error, an
+    # unparseable response head as a bare Exception; both must be retried.
+    #
+    # Once the body has started, the block owns the stream and its failures
+    # (disk full while storing, etc.) do not originate upstream — those are
+    # re-raised as-is.
     private def checked_get(uri : URI, headers : HTTP::Headers, &) : Nil
       retried = false
       client = @pool.checkout(uri)
@@ -400,15 +416,12 @@ module AptLarder
           end
           reuse ? @pool.checkin(uri, client) : @pool.discard(client)
           break
-        rescue ex : IO::Error
+        rescue ex
           @pool.discard(client)
           raise ex if retried || body_started
           retried = true
           client = HTTP::Client.new(uri)
           configure_client(client)
-        rescue ex
-          @pool.discard(client)
-          raise ex
         end
       end
     end
