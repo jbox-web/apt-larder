@@ -8,7 +8,10 @@ module AptLarder
     # Reads the admin host, port, and Bearer token from `AdminConfig`.
     # All methods raise `Admin::Error` on non-2xx responses or network failures.
     class Client
-      def initialize(@config : AdminConfig)
+      # *timeout*, when given, bounds both the connect and the read phase of
+      # every request. Left nil (the interactive CLI subcommands), requests
+      # wait as long as the operating system lets them.
+      def initialize(@config : AdminConfig, @timeout : Time::Span? = nil)
       end
 
       # Returns `{"status" => "ok", "version" => "..."}`.
@@ -65,10 +68,21 @@ module AptLarder
       end
 
       private def http_request(method : String, path : String, body : String = "") : HTTP::Client::Response
-        url = "http://#{@config.host}:#{@config.port}#{path}"
         h = HTTP::Headers{"Content-Type" => "application/json"}
         h["Authorization"] = "Bearer #{@config.api_token}" unless @config.api_token.empty?
-        response = HTTP::Client.exec(method, url, headers: h, body: body)
+        # An instance client rather than `HTTP::Client.exec`: the class method
+        # exposes no timeout setter, and a request that never returns is the
+        # one failure mode the healthcheck subcommand must not have.
+        client = HTTP::Client.new(@config.host, @config.port)
+        if timeout = @timeout
+          client.connect_timeout = timeout
+          client.read_timeout = timeout
+        end
+        begin
+          response = client.exec(method, path, headers: h, body: body)
+        ensure
+          client.close
+        end
         unless response.success?
           raise Admin::Error.new("#{response.status_code} #{response.body.strip}")
         end

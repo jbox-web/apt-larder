@@ -82,4 +82,17 @@ USER nonroot
 ENV USER=nonroot
 ENV HOME=/home/nonroot
 WORKDIR /home/nonroot
+
+# The probe is the binary itself, not curl: this image is distroless, so it has
+# no shell, no curl and no wget — apt-larder is the only thing in here that can
+# speak HTTP. Exec form for the same reason (the shell form would need /bin/sh).
+#
+# It probes the proxy (GET /_health on server_port), not the admin server: no
+# --config is passed here, so it runs on defaults, and the defaults keep the
+# admin server off. Gating health on an optional surface reported unhealthy on
+# every deployment whose config lives outside the working directory, while the
+# proxy was serving packages perfectly.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD ["apt-larder", "healthcheck"]
+
 ENTRYPOINT ["apt-larder"]

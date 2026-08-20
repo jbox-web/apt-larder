@@ -57,6 +57,47 @@ Spectator.describe AptLarder::Proxy do
     end
   end
 
+  describe "liveness probe" do
+    it "answers /_health with 200 without resolving anything" do
+      ctx = make_ctx("GET", "/_health")
+      proxy.handle(ctx)
+      expect(ctx.response.status_code).to eq(200)
+    end
+
+    it "answers a HEAD probe with 200" do
+      ctx = make_ctx("HEAD", "/_health")
+      proxy.handle(ctx)
+      expect(ctx.response.status_code).to eq(200)
+    end
+
+    # The probe fires every 30s under Docker's HEALTHCHECK. Booked as a request
+    # it would invent ~2880 unmappable-URL errors a day in the proxy counters,
+    # in /api/metrics and in the access log — which is what made the endpoint
+    # necessary in the first place.
+    it "does not book the probe into the counters" do
+      proxy.handle(make_ctx("GET", "/_health"))
+      expect(proxy.stats[:errors]).to eq(0)
+      expect(proxy.stats[:hits]).to eq(0)
+      expect(proxy.stats[:misses]).to eq(0)
+    end
+
+    it "still rejects a non-GET/HEAD probe path with 405" do
+      ctx = make_ctx("POST", "/_health")
+      proxy.handle(ctx)
+      expect(ctx.response.status_code).to eq(405)
+    end
+
+    # Only the origin-form resource is the probe. A mirror that happens to
+    # publish a /_health path must keep being proxied, not shadowed.
+    it "does not shadow an upstream path named _health" do
+      store("mirror.example.com/_health", "upstream-payload")
+      ctx = make_ctx("GET", "/mirror.example.com/_health")
+      proxy.handle(ctx)
+      expect(ctx.response.status_code).to eq(200)
+      expect(proxy.stats[:hits]).to eq(1)
+    end
+  end
+
   describe "resolve — host-in-path mode" do
     it "serves a cached file via host-in-path URL" do
       store("mirror.example.com/debian/pool/main/pkg.deb", "data")

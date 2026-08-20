@@ -20,6 +20,13 @@ module AptLarder
     # Pre-computed at compile time; avoids string interpolation on every download.
     USER_AGENT = "apt-larder/#{AptLarder::VERSION}"
 
+    # Origin-form path answered by the liveness probe.
+    #
+    # The leading underscore is what keeps it collision-free: in host-in-path
+    # mode the first segment is a mirror hostname, and `_health` is not a legal
+    # hostname, so no `sources.list` entry can ever produce this resource.
+    HEALTH_PATH = "/_health"
+
     private enum CacheResult
       Hit
       Miss
@@ -106,6 +113,22 @@ module AptLarder
 
       if req.method == "CONNECT"
         tunnel(req, res, started_at)
+        return
+      end
+
+      # Liveness probe, answered before anything is resolved, counted or
+      # logged. It has to be free of side effects: Docker's HEALTHCHECK fires
+      # it every 30s, and booked as a regular request it would resolve to
+      # nothing and book ~2880 invented errors a day into the counters, into
+      # /api/metrics and into the access log.
+      #
+      # Matched on the raw resource, not on the path: `GET http://mirror/_health`
+      # is a proxied request for a mirror that happens to publish that path,
+      # and must keep being proxied rather than shadowed by the probe.
+      if req.resource == HEALTH_PATH && req.method.in?("GET", "HEAD")
+        res.status = HTTP::Status::OK
+        res.content_type = "text/plain"
+        res.puts "ok" unless req.method == "HEAD"
         return
       end
 

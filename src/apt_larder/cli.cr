@@ -14,6 +14,7 @@ module AptLarder
   #
   # - `server` — start the caching proxy
   # - `info`   — print version and Crystal build information
+  # - `healthcheck` — probe the admin API, for Docker's `HEALTHCHECK`
   # - `stats`  — show live proxy counters via the admin API
   # - `cache`  — manage the cache via the admin API (list / flush / invalidate)
   # - `evict`  — trigger LRU / time-based eviction via the admin API
@@ -22,6 +23,7 @@ module AptLarder
   #
   # ```
   # apt-larder server --config /etc/apt-larder.yml
+  # apt-larder healthcheck
   # apt-larder stats
   # apt-larder cache list --prefix deb.debian.org
   # apt-larder cache invalidate "deb.debian.org/debian/pool/main/pkg.deb"
@@ -74,6 +76,32 @@ module AptLarder
         puts "crystal:"
         puts Crystal::DESCRIPTION
         puts
+      end
+    end
+
+    # Probes the proxy and exits 0 (healthy) or 1 (unhealthy).
+    #
+    # Exists for the distroless release image, which carries no shell and no
+    # curl: see `AptLarder::Healthcheck` for why the probe has to live in the
+    # binary itself, and why it targets the proxy rather than the admin API.
+    class Healthcheck < Admiral::Command
+      include CLIErrorHandling
+      define_help description: "Probe the proxy and exit 0 (healthy) or 1 (unhealthy)"
+
+      # ameba:disable Lint/UselessAssign
+      define_flag config : String,
+        description: "Path to config file",
+        long: "config",
+        short: "c",
+        default: "apt-larder.yml"
+
+      def run
+        AptLarder.init_app!(flags.config)
+        exit AptLarder::Healthcheck.run(AptLarder.config)
+      rescue ex : Exception
+        # Only an unreadable or invalid config file reaches this: the probe
+        # itself never raises, it returns an exit code.
+        handle_error(ex)
       end
     end
 
@@ -245,6 +273,7 @@ module AptLarder
 
     register_sub_command server, Server, description: "Run AptLarder webserver"
     register_sub_command info, Info, description: "Show AptLarder information"
+    register_sub_command healthcheck, Healthcheck, description: "Probe the proxy liveness endpoint"
     register_sub_command stats, Stats, description: "Show proxy statistics"
     register_sub_command cache, Cache, description: "Manage the cache"
     register_sub_command evict, Evict, description: "Run eviction now"

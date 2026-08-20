@@ -5,9 +5,9 @@ x-client: &client
       FROM debian:trixie
       RUN echo 'Acquire::http::Proxy "http://apt-larder:3142";' > /etc/apt/apt.conf.d/01proxy
       CMD ["bash"]
-  # depends_on:
-  #   apt-larder:
-  #     condition: service_healthy
+  depends_on:
+    apt-larder:
+      condition: service_healthy
   stdin_open: true
   tty: true
 
@@ -28,12 +28,17 @@ services:
       - ./cache:/home/nonroot/cache
       - ./logs:/home/nonroot/logs
     command: server --config /home/nonroot/apt-larder.yml
-    # healthcheck:
-    #   test: ["CMD-SHELL", "wget -qO- http://localhost:3142/deb.debian.org/debian/dists/trixie/InRelease > /dev/null 2>&1 || exit 1"]
-    #   interval: 5s
-    #   timeout: 3s
-    #   retries: 5
-    #   start_period: 2s
+    # Overrides the image's HEALTHCHECK with the same command on a shorter
+    # cycle: the baked one waits 30s between probes, which the clients below
+    # would sit through before starting. CMD, not CMD-SHELL — the image is
+    # distroless, so there is no /bin/sh to interpret a shell string (and no
+    # wget or curl either, which is why the probe is the binary itself).
+    healthcheck:
+      test: ["CMD", "apt-larder", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 2s
 
   client1:
     <<: *client

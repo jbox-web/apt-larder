@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `GET /_health` on the proxy — a side-effect-free liveness endpoint, answered
+  before any resolution, cache lookup or upstream call, and excluded from the
+  counters, from `/api/metrics` and from the access log
+- `apt-larder healthcheck` subcommand — probes `GET /_health` on the proxy and
+  exits 0 (healthy) or 1 (unhealthy), with a 2s bound on connect and read. It
+  needs no config file and no admin server, so a container started on pure
+  defaults reports healthy. Dials `127.0.0.1` when the server binds a wildcard
+  address
+- `HEALTHCHECK` in the Docker image, calling the binary itself: the distroless
+  runtime has no shell and no curl. `docker-compose.yml` overrides it on a
+  shorter cycle and gates the client containers on `service_healthy`
+- Spec coverage for `Admin::Client`: verbs, query string, request body, Bearer
+  header, 204 and 404 branches, unreachable server, connect timeout
+
 ## [1.2.0] - 2026-08-07
 
 ### Added

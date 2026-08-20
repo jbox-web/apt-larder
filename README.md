@@ -18,6 +18,7 @@
 - [Configuration](#configuration)
 - [Environment variables](#environment-variables)
 - [Admin UI & REST API](#admin-ui--rest-api)
+- [Health check](#health-check)
 - [System integration (`extra/`)](#system-integration-extra)
 - [systemd integration](#systemd-integration)
 - [Signals](#signals)
@@ -100,6 +101,11 @@ docker run -d \
   -v /srv/apt-logs:/home/nonroot/logs \
   apt-larder:latest server --config /home/nonroot/apt-larder.yml
 ```
+
+The image declares a `HEALTHCHECK` that calls `apt-larder healthcheck` (see
+[Health check](#health-check)). It probes the proxy itself and needs no config
+and no admin server — a container started with nothing but defaults reports
+healthy as soon as it serves.
 
 ## Configuration
 
@@ -240,6 +246,50 @@ Two independent mechanisms — leave both empty to disable auth:
 - **API** (`/api/*`): `Authorization: Bearer <api_token>`
 - **UI** (`/*`): HTTP Basic Auth (`ui_user` / `ui_password`)
 
+## Health check
+
+```sh
+apt-larder healthcheck [--config apt-larder.yml]
+```
+
+Performs a `GET /_health` against the proxy (`server_host` / `server_port`) and
+exits `0` when it answers 2xx, `1` otherwise. Connect and read are both bounded
+at 2 seconds — a probe that hangs reports nothing. Failures print one line and
+no backtrace:
+
+```
+healthy: proxy answered /_health on 127.0.0.1:3142
+unhealthy: cannot reach the proxy at 127.0.0.1:3142 — Connection refused
+unhealthy: proxy answered 503 on 127.0.0.1:3142/_health
+```
+
+It probes the **proxy**, not the admin API. The admin server is optional and
+off by default, and the image's `HEALTHCHECK` passes no `--config` — so a probe
+aimed at the admin API reported unhealthy on every deployment whose config lives
+outside the working directory, while the proxy was serving packages perfectly.
+Gating container health on the one surface the container exists to provide
+means a default `docker run` with no config file at all goes green.
+
+`/_health` is answered by the proxy before any resolution, cache lookup or
+upstream call, and is deliberately absent from the counters, from
+`/api/metrics` and from the access log: a probe firing every 30 seconds would
+otherwise book roughly 2,880 invented errors a day. The leading underscore
+keeps it collision-free — `_health` is not a legal hostname, so no host-in-path
+request can produce it, and `GET http://mirror/_health` is still proxied
+upstream rather than shadowed.
+
+When `server_host` is a wildcard (`0.0.0.0`, `::`), the probe dials `127.0.0.1`
+— that is what a wildcard bind actually answers on from inside the container.
+
+One residual caveat: the baked `HEALTHCHECK` passes no `--config`, so it probes
+the default `3142`. If you move the server off that port, override the
+healthcheck to pass your config (`["CMD", "apt-larder", "healthcheck", "-c",
+"/path/apt-larder.yml"]`), otherwise the probe dials a port nothing listens on.
+
+This subcommand exists because the release image is distroless — no shell, no
+curl — so the only process able to speak HTTP inside the container is
+apt-larder itself.
+
 ## System integration (`extra/`)
 
 The `extra/` directory contains ready-to-use files for running apt-larder as a managed system service:
@@ -297,7 +347,8 @@ mise dev:spec spec/proxy_spec.cr
 ```
 src/apt-larder.cr          Entry point: config, signals, server loop
 src/apt_larder/
-  cli.cr                   Admiral CLI — subcommands: server, info
+  cli.cr                   Admiral CLI — subcommands: server, info, healthcheck, stats, cache, evict
+  healthcheck.cr           Self-probe for Docker HEALTHCHECK — exits 0/1 on the proxy /_health
   config.cr                YAML config
   admin_config.cr          Nested admin config (port, auth)
   proxy.cr                 HTTP handler: resolve → ensure_cached → serve
