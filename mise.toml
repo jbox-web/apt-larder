@@ -38,7 +38,12 @@ run = "rm -rf bin/* lib/"
 description = "Run Crystal spec"
 run = "crystal spec {{vars.SPEC_OPTS}}"
 
-[tasks."dev:doc"]
+[tasks."dev:spec-mt"]
+description = "Run Crystal spec (multi-threaded)"
+env = { CRYSTAL_WORKERS = "4" }
+run = "crystal spec {{vars.SPEC_OPTS}} -Dpreview_mt"
+
+[tasks."dev:docs"]
 description = "Generate project documentation"
 run = "rm -rf docs && crystal doc"
 
@@ -53,6 +58,10 @@ run = "mise dev:build && mise dev:ameba && mise dev:spec"
 [tasks."dev:format"]
 description = "Format code"
 run = "crystal tool format src/"
+
+[tasks."dev:format-check"]
+description = "Check code formatting"
+run = "crystal tool format --check src/"
 
 [tasks."dev:docker-image"]
 description = "Build local multiplatforms Docker image for local development"
