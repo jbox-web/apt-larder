@@ -23,6 +23,17 @@ module AptLarder
     # entry removes all of them.
     SIDECAR_SUFFIXES = {".sha256", VALIDATORS_SUFFIX}
 
+    # Returns `true` for a path or key ending with a sidecar suffix. Sidecars
+    # belong to a data file and are never entries of their own; they share the
+    # key namespace, so the proxy must never read or write such a key.
+    #
+    # Case-insensitive: on APFS or a Docker Desktop bind mount `Release.SHA256`
+    # is the very file `Release.sha256`.
+    def self.sidecar?(path : String) : Bool
+      path = path.downcase
+      SIDECAR_SUFFIXES.any? { |suffix| path.ends_with?(suffix) }
+    end
+
     def initialize(@root : String)
       Dir.mkdir_p(@root)
       @mutex = Mutex.new
@@ -234,7 +245,7 @@ module AptLarder
     def clear : Int32
       deleted = 0
       Dir.glob("#{@root}/**/*") do |path|
-        next if sidecar?(path)
+        next if Cache.sidecar?(path)
         next unless File.file?(path)
         File.delete(path) rescue next
         SIDECAR_SUFFIXES.each { |suffix| File.delete("#{path}#{suffix}") rescue nil }
@@ -267,7 +278,7 @@ module AptLarder
       total_bytes = 0_i64
 
       Dir.glob("#{@root}/**/*") do |path|
-        next if sidecar?(path)
+        next if Cache.sidecar?(path)
         next unless File.file?(path)
         info = File.info(path) rescue next
         key = path[(@root.size + 1)..]
@@ -358,7 +369,7 @@ module AptLarder
     def entries(prefix : String = "", page : Int32 = 1, per_page : Int32 = 50) : {entries: Array(EntryInfo), total: Int32}
       all = [] of EntryInfo
       Dir.glob("#{@root}/**/*") do |path|
-        next if sidecar?(path)
+        next if Cache.sidecar?(path)
         next unless File.file?(path)
         key = path[(@root.size + 1)..]
         next unless prefix.empty? || key.starts_with?(prefix)
@@ -390,7 +401,7 @@ module AptLarder
     private def count_files_on_disk : Int32
       count = 0
       Dir.glob("#{@root}/**/*") do |path|
-        next if sidecar?(path)
+        next if Cache.sidecar?(path)
         count += 1 if File.file?(path)
       end
       count
@@ -398,12 +409,6 @@ module AptLarder
 
     private def path_for(key : String) : String
       File.join(@root, key)
-    end
-
-    # Returns `true` for the `.sha256` and `.validators` sidecars, which belong
-    # to a data file and are never entries of their own.
-    private def sidecar?(path : String) : Bool
-      SIDECAR_SUFFIXES.any? { |suffix| path.ends_with?(suffix) }
     end
 
     # Writes the `.validators` sidecar of the data file at *path*, or removes it

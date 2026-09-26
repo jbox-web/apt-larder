@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   receiving the old `InRelease` until it failed with "Release file … is
   expired". Index files cached before this fix carry no validators and are
   fetched once unconditionally
+- Requests whose cache key ends in `.sha256` or `.validators` (in any case, for
+  case-insensitive filesystems) are relayed from upstream without touching the
+  cache. They share the key namespace with the sidecars, so a client could read
+  the sidecar of another entry or, on an upstream 200, overwrite it and have
+  its content replayed as request headers. `DELETE /api/cache/:key` refuses
+  such keys with 400: removing a `.sha256` alone left its package served
+  without integrity check
+- `CONNECT` to a host refusing the connection answers 502 instead of 200. On
+  some platforms (macOS 27 with Crystal 1.20.3) a refused connect does not
+  raise until the first write, after the 200 had been sent
 
 ## [1.3.0] - 2026-08-20
 

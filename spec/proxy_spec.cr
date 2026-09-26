@@ -38,6 +38,47 @@ Spectator.describe AptLarder::Proxy do
       expect(ctx.response.status_code).to eq(502)
     end
 
+    # Guards the refused-connect detection: a connected upstream must still
+    # get a working tunnel.
+    it "CONNECT to a reachable host answers 200 and relays bytes both ways" do
+      echo = TCPServer.new("127.0.0.1", 0)
+      spawn do
+        if peer = echo.accept?
+          if line = peer.gets
+            peer.puts "echo:#{line}"
+            peer.flush
+          end
+          peer.close
+        end
+      end
+
+      server = HTTP::Server.new do |ctx|
+        proxy.handle(ctx)
+      rescue IO::Error | HTTP::Server::ClientError
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      client = TCPSocket.new("127.0.0.1", addr.port)
+      client.read_timeout = 5.seconds
+      client << "CONNECT 127.0.0.1:#{echo.local_address.port} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+      client.flush
+      status_line = client.gets
+      while (header = client.gets) && !header.empty?
+      end
+      client.puts "ping"
+      client.flush
+      reply = client.gets
+
+      client.close
+      server.close
+      echo.close
+
+      expect(status_line).to eq("HTTP/1.1 200 OK")
+      expect(reply).to eq("echo:ping")
+    end
+
     it "rejects non-GET/HEAD methods with 405" do
       ctx = make_ctx("POST", "/mirror/pkg.deb")
       proxy.handle(ctx)
@@ -744,6 +785,168 @@ Spectator.describe AptLarder::Proxy do
       server.close
 
       expect(File.exists?(File.join(tmp_dir, "127.0.0.1:#{addr.port}/pool/main/pkg.deb.validators"))).to be_false
+    end
+  end
+
+  # `.sha256` and `.validators` sidecars share the cache key namespace. A key
+  # with one of those suffixes must neither expose nor overwrite the sidecar of
+  # another entry: it is relayed from upstream and never touches the cache.
+  describe "sidecar-suffixed keys" do
+    let(upstream_hits) { [0] }
+    let(fake_upstream) do
+      hits = upstream_hits
+      server = HTTP::Server.new do |ctx|
+        hits[0] += 1
+        ctx.response.content_type = "text/plain"
+        ctx.response.print("upstream body")
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+      {server, addr.port}
+    end
+
+    after_each { fake_upstream[0].close }
+
+    it "does not serve the cached validators sidecar of an entry" do
+      _, port = fake_upstream
+      key = "127.0.0.1:#{port}/dists/stable/Release"
+      cache.store(key, IO::Memory.new("release".to_slice), last_modified: "Wed, 01 Jan 2020 00:00:00 GMT")
+
+      ctx = make_ctx("GET", "http://#{key}.validators")
+      proxy.handle(ctx)
+
+      expect(upstream_hits[0]).to eq(1)
+      expect(ctx.response.status_code).to eq(200)
+    end
+
+    it "does not overwrite the sidecar of an entry with the upstream body" do
+      _, port = fake_upstream
+      key = "127.0.0.1:#{port}/dists/stable/Release"
+      cache.store(key, IO::Memory.new("release".to_slice), last_modified: "Wed, 01 Jan 2020 00:00:00 GMT")
+      reval_proxy = AptLarder::Proxy.new(cache, AptLarder::SingleFlight.new, max_redirects: 5, index_ttl: 0, connect_timeout: 10, read_timeout: 30)
+
+      reval_proxy.handle(make_ctx("GET", "http://#{key}.validators"))
+      reval_proxy.handle(make_ctx("GET", "http://#{key}.sha256"))
+
+      expect(File.read(File.join(tmp_dir, "#{key}.validators"))).to eq("Last-Modified: Wed, 01 Jan 2020 00:00:00 GMT\n")
+      expect(File.read(File.join(tmp_dir, "#{key}.sha256"))).to eq(Digest::SHA256.hexdigest("release"))
+    end
+
+    # On a case-insensitive filesystem (APFS, Docker Desktop bind mounts)
+    # Release.SHA256 is the very file Release.sha256.
+    it "treats sidecar suffixes case-insensitively" do
+      _, port = fake_upstream
+      key = "127.0.0.1:#{port}/dists/stable/Release"
+      cache.store(key, IO::Memory.new("release".to_slice), last_modified: "Wed, 01 Jan 2020 00:00:00 GMT")
+      reval_proxy = AptLarder::Proxy.new(cache, AptLarder::SingleFlight.new, max_redirects: 5, index_ttl: 0, connect_timeout: 10, read_timeout: 30)
+
+      reval_proxy.handle(make_ctx("GET", "http://#{key}.SHA256"))
+      reval_proxy.handle(make_ctx("GET", "http://#{key}.Validators"))
+
+      expect(upstream_hits[0]).to eq(2)
+      expect(Dir.children(File.dirname(File.join(tmp_dir, key))).sort!).to eq(["Release", "Release.sha256", "Release.validators"])
+      expect(File.read(File.join(tmp_dir, "#{key}.sha256"))).to eq(Digest::SHA256.hexdigest("release"))
+    end
+
+    # IO::Sized stops at EOF without raising, so a short body must be caught by
+    # comparing the relayed byte count with Content-Length, as download does.
+    it "counts a relayed body shorter than Content-Length as an error" do
+      raw = TCPServer.new("127.0.0.1", 0)
+      spawn do
+        if peer = raw.accept?
+          while (line = peer.gets) && !line.empty?
+          end
+          peer << "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n" << "x" * 400
+          peer.flush
+          peer.close
+        end
+      end
+
+      proxy.handle(make_ctx("GET", "http://127.0.0.1:#{raw.local_address.port}/images/disk.iso.sha256"))
+      raw.close
+
+      expect(proxy.stats[:errors]).to eq(1)
+      expect(proxy.stats[:misses]).to eq(0)
+    end
+
+    # The client was promised Content-Length bytes. Unless the connection is
+    # closed, HTTP::Server keeps it alive and both sides wait on each other.
+    it "closes the client connection after a truncated relayed body" do
+      raw = TCPServer.new("127.0.0.1", 0)
+      spawn do
+        if peer = raw.accept?
+          while (line = peer.gets) && !line.empty?
+          end
+          peer << "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n" << "x" * 400
+          peer.flush
+          peer.close
+        end
+      end
+
+      server = HTTP::Server.new do |ctx|
+        proxy.handle(ctx)
+      rescue IO::Error | HTTP::Server::ClientError
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      client = TCPSocket.new("127.0.0.1", addr.port)
+      client.read_timeout = 2.seconds
+      client << "GET http://127.0.0.1:#{raw.local_address.port}/images/disk.iso.sha256 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+      client.flush
+      while (header = client.gets) && !header.empty?
+      end
+      body = Bytes.new(1000)
+      received = 0
+      closed = false
+      begin
+        loop do
+          n = client.read(body[received..])
+          if n == 0
+            closed = true
+            break
+          end
+          received += n
+        end
+      rescue IO::TimeoutError
+      end
+
+      client.close
+      server.close
+      raw.close
+
+      expect(received).to eq(400)
+      expect(closed).to be_true
+    end
+
+    it "relays a published .sha256 file without caching it" do
+      _, port = fake_upstream
+
+      ctx = make_ctx("GET", "http://127.0.0.1:#{port}/images/disk.iso.sha256")
+      proxy.handle(ctx)
+
+      expect(ctx.response.status_code).to eq(200)
+      expect(upstream_hits[0]).to eq(1)
+      # "upstream body" streamed to the client
+      expect(proxy.stats[:bytes]).to eq(13)
+      expect(File.exists?(File.join(tmp_dir, "127.0.0.1:#{port}/images/disk.iso.sha256"))).to be_false
+    end
+
+    it "passes an upstream error status through" do
+      server = HTTP::Server.new do |ctx|
+        ctx.response.status = HTTP::Status::NOT_FOUND
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      ctx = make_ctx("GET", "http://127.0.0.1:#{addr.port}/images/disk.iso.sha256")
+      proxy.handle(ctx)
+      server.close
+
+      expect(ctx.response.status_code).to eq(404)
     end
   end
 

@@ -94,6 +94,16 @@ Spectator.describe AptLarder::Admin::Api do
       expect(ctx.response.status_code).to eq(404)
     end
 
+    # Deleting only the .sha256 sidecar would leave the .deb in place with no
+    # sidecar, which valid? then trusts: the file would be served unverified.
+    it "rejects a sidecar key with 400 and leaves the entry intact" do
+      cache.store("mirror/pool/main/pkg.deb", IO::Memory.new("data".to_slice))
+      ctx = make_ctx("DELETE", "/api/cache/mirror%2Fpool%2Fmain%2Fpkg.deb.sha256")
+      api.handle(ctx)
+      expect(ctx.response.status_code).to eq(400)
+      expect(File.exists?(File.join(tmp_dir, "mirror/pool/main/pkg.deb.sha256"))).to be_true
+    end
+
     it "rejects path traversal with 400 (guard fires before invalidate)" do
       # decodes to "../../etc/passwd" — must be refused before any fs access
       ctx = make_ctx("DELETE", "/api/cache/..%2F..%2Fetc%2Fpasswd")

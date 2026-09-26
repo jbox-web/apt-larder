@@ -134,8 +134,10 @@ module AptLarder
       private def handle_invalidate(encoded_key : String, res : HTTP::Server::Response) : Nil
         key = URI.decode(encoded_key)
         # Reject path traversal before touching the filesystem — a decoded key
-        # like "../../etc/passwd" must never reach exists?/invalidate.
-        if key.includes?("..")
+        # like "../../etc/passwd" must never reach exists?/invalidate. Reject
+        # sidecar keys too: a sidecar is not an entry, and deleting a .sha256
+        # alone would leave its data file unverified (valid? trusts it).
+        if key.includes?("..") || Cache.sidecar?(key)
           res.status = HTTP::Status::BAD_REQUEST
           json(res) { |j| j.object { j.field "error", "invalid key" } }
           return

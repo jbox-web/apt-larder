@@ -155,6 +155,13 @@ module AptLarder
         return
       end
 
+      # A key ending like a sidecar would read or overwrite the sidecar of
+      # another entry: relay it from upstream without touching the cache.
+      if Cache.sidecar?(key)
+        relay(req, res, key: key, upstream: upstream, started_at: started_at)
+        return
+      end
+
       cache_result, error_status = ensure_cached(key, upstream)
 
       if cache_result.error?
@@ -177,6 +184,54 @@ module AptLarder
         return
       end
       log_access(req.method, key, res.status_code, started_at, cache_result, bytes: bytes, client: req.remote_address)
+    end
+
+    # Streams *upstream* to the client without reading or writing the cache.
+    #
+    # Used for keys that collide with sidecar names. Counted as a miss (the
+    # bytes came from upstream); upstream error codes are passed through with
+    # the body left unread, as in `download`.
+    private def relay(req : HTTP::Request, res : HTTP::Server::Response, key : String, upstream : String, started_at : Time::Instant) : Nil
+      status = 502
+      bytes = 0_i64
+      streaming = false
+      truncated = false
+      fetch(upstream, HTTP::Headers{"User-Agent" => USER_AGENT}) do |response|
+        status = response.status_code
+        res.status = HTTP::Status.new(status)
+        next false unless status == 200
+        res.content_type = response.headers["Content-Type"]? || "application/octet-stream"
+        expected = response.headers["Content-Length"]?.try(&.to_i64?)
+        res.content_length = expected if expected
+        # HEAD: the body is left unread and the connection discarded.
+        next false if req.method == "HEAD"
+        streaming = true
+        bytes = IO.copy(response.body_io, res)
+        # IO::Sized stops at EOF without raising: a short body only shows up
+        # here. The status line is already sent, so it can only be booked as an
+        # error and the connection discarded.
+        truncated = !expected.nil? && bytes != expected
+        if truncated
+          Log.error { "incomplete relay #{upstream}: expected #{expected} B, got #{bytes} B" }
+          # HTTP::Server reads this after the handler returns, even with the
+          # headers already sent: without it the client connection is kept
+          # alive and the client waits forever for the missing bytes.
+          res.headers["Connection"] = "close"
+        end
+        !truncated
+      end
+      result = status == 200 && !truncated ? CacheResult::Miss : CacheResult::Error
+      log_access(req.method, key, status, started_at, result, bytes: bytes, client: req.remote_address)
+    rescue ex
+      Log.warn { "relay failed: #{upstream} — #{ex.message}" }
+      # Once the body has started the status line is already on the wire: the
+      # response can only be cut short, by closing the client connection.
+      if streaming
+        res.headers["Connection"] = "close"
+      else
+        res.status = HTTP::Status::BAD_GATEWAY
+      end
+      log_access(req.method, key, 502, started_at, CacheResult::Error, bytes: bytes, client: req.remote_address)
     end
 
     # Maps the request (any mode) to {cache key, upstream URL}.
@@ -551,6 +606,18 @@ module AptLarder
       host, port = AptLarder.parse_connect_target(req.resource)
 
       upstream = TCPSocket.new(host, port, connect_timeout: @connect_timeout)
+      # On some platforms (seen on macOS 27 with Crystal 1.20.3) a refused
+      # connect returns without raising and only fails on the first write,
+      # after the 200 has already been sent. getpeername fails on a socket that
+      # never connected, so asking for the peer surfaces the refusal here.
+      begin
+        upstream.remote_address
+      rescue ex
+        # Close it here: the rescue below only answers 502, and the socket
+        # would otherwise hold a file descriptor until the GC finalizes it.
+        upstream.close rescue nil
+        raise ex
+      end
       upstream.read_timeout = @read_timeout
 
       # upgrade() writes HTTP headers (status 200) and yields the raw client socket.
