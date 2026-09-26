@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Index revalidation replays the upstream `Last-Modified` (kept in a new
+  `.validators` sidecar, with the `ETag` as a fallback when there is none)
+  instead of sending the local file mtime as `If-Modified-Since`. The mtime is bumped to "now" on every 304, so a 304 from
+  a mirror that had not synced yet pushed it past the next upstream
+  `Last-Modified`, and every later revalidation was answered 304: APT kept
+  receiving the old `InRelease` until it failed with "Release file … is
+  expired". Index files cached before this fix carry no validators and are
+  fetched once unconditionally
+
 ## [1.3.0] - 2026-08-20
 
 ### Added

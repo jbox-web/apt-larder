@@ -59,7 +59,7 @@ src/apt_larder/
   admin_config.cr          AdminConfig — nested YAML config for the admin server
   server.cr                HTTP server lifecycle (start/stop, graceful shutdown, background loops)
   proxy.cr                 HTTP handler: resolves request → cache key + upstream URL, triggers fetch, serves file
-  cache.cr                 Filesystem cache — atomic writes, TTL, SHA256 integrity sidecars, LRU eviction
+  cache.cr                 Filesystem cache — atomic writes, TTL, SHA256 integrity and validator sidecars, LRU eviction
   single_flight.cr         Concurrent deduplication — one upstream fetch per key; other fibers wait on a Channel
   connection_pool.cr       Per-host HTTP connection pool with stale-connection retry
   systemd.cr               systemd sd_notify integration (READY=1, STOPPING=1, watchdog, STATUS=)
@@ -71,11 +71,13 @@ src/assets/admin/
   index.html / app.js / style.css   Web UI compiled into binary at build time
 ```
 
-**Request flow:** `Proxy#handle` → `resolve` (maps request to cache key + upstream URL) → `ensure_cached` → `SingleFlight#run` → `download` (conditional GET with `If-Modified-Since`) → `serve` (streams from disk).
+**Request flow:** `Proxy#handle` → `resolve` (maps request to cache key + upstream URL) → `ensure_cached` → `SingleFlight#run` → `download` (conditional GET replaying the upstream `Last-Modified`/`ETag`) → `serve` (streams from disk).
 
 **Immutability heuristic:** `.deb`/`.udeb`/`.ddeb` files and paths containing `/pool/` or `/by-hash/` are treated as immutable (cached forever, SHA256-verified). Everything else uses `index_ttl` (minutes).
 
 **Redirect handling:** `Proxy#fetch` follows HTTP 301/302/303/307/308 up to `max_redirects`, including http→https upgrades (Crystal's `HTTP::Client` handles TLS automatically).
+
+**Revalidation:** A `.validators` sidecar keeps the upstream `Last-Modified` and `ETag` of each index file; revalidation echoes `Last-Modified` verbatim in `If-Modified-Since`, and falls back to `If-None-Match` only when upstream sent no `Last-Modified` (If-None-Match takes precedence server-side, so a round-robin node on an older file with another ETag would answer 200 and roll the cache back). The file mtime is the local clock (bumped on every 304) and only drives the TTL and LRU — never send it upstream, or a 304 from a lagging mirror pins a stale `Release` forever.
 
 **Integrity:** A `.sha256` sidecar is written alongside each cached file. Immutable files are verified on first serve per session; corrupt files are invalidated and re-downloaded automatically.
 

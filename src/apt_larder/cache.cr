@@ -4,7 +4,9 @@ module AptLarder
   # Each entry is stored as a plain file under `root` using the cache key as a
   # relative path. A `.sha256` sidecar is written alongside every file so that
   # immutable entries can be verified on first serve without trusting the
-  # filesystem alone.
+  # filesystem alone. A `.validators` sidecar keeps the upstream `Last-Modified`
+  # and `ETag` of an entry, so revalidation replays what upstream sent instead
+  # of a local timestamp.
   #
   # Three in-memory indices avoid redundant syscalls at runtime:
   # - `@known` — keys confirmed present on disk (never shrinks while running)
@@ -14,6 +16,12 @@ module AptLarder
   # All public methods are safe to call from concurrent fibers.
   class Cache
     Log = ::Log.for("apt-larder.cache")
+
+    VALIDATORS_SUFFIX = ".validators"
+
+    # Every file kept alongside a data file. Scans skip them, and removing an
+    # entry removes all of them.
+    SIDECAR_SUFFIXES = {".sha256", VALIDATORS_SUFFIX}
 
     def initialize(@root : String)
       Dir.mkdir_p(@root)
@@ -74,16 +82,43 @@ module AptLarder
     rescue File::Error
     end
 
+    # Upstream cache validators of an entry, stored verbatim as received so they
+    # can be echoed back unchanged in `If-Modified-Since` / `If-None-Match`.
+    record Validators, last_modified : String?, etag : String?
+
+    # Returns the upstream validators stored for *key*, or `nil` when the entry
+    # has none (missing entry, upstream sent neither header, or entry cached
+    # before validators were recorded).
+    def validators(key : String) : Validators?
+      last_modified = nil
+      etag = nil
+      File.each_line("#{path_for(key)}#{VALIDATORS_SUFFIX}") do |line|
+        name, _, value = line.partition(": ")
+        case name
+        when "Last-Modified" then last_modified = value
+        when "ETag"          then etag = value
+        end
+      end
+      return nil unless last_modified || etag
+      Validators.new(last_modified, etag)
+    rescue File::Error
+      nil
+    end
+
     # Streams *io* into the cache under *key*.
     #
     # Writes to a randomly-named `.tmp` file first, then renames it into place
     # atomically. The SHA256 of the content is computed during the write at no
     # extra I/O cost and stored in a `.sha256` sidecar file.
     #
+    # *last_modified* and *etag* are the upstream response validators; they are
+    # kept in a `.validators` sidecar, which is removed when neither is given so
+    # a re-stored entry never keeps the validators of its previous content.
+    #
     # If the write fails for any reason (network drop, disk full, …) the `.tmp`
     # file is deleted and the exception is re-raised. The destination is never
     # left in a partially-written state.
-    def store(key : String, io : IO) : Nil
+    def store(key : String, io : IO, last_modified : String? = nil, etag : String? = nil) : Nil
       dest = path_for(key)
       Dir.mkdir_p(File.dirname(dest))
       tmp = "#{dest}.#{Random::Secure.hex(8)}.tmp"
@@ -110,6 +145,11 @@ module AptLarder
         # same key, so this check is race-free.
         is_new = !File.exists?(dest)
         File.rename(tmp, dest)
+        # Written after the data file is published. A crash in between leaves
+        # the new data with the previous (or no) validators: the next
+        # revalidation then gets a 200 and heals the entry. The reverse order
+        # could pair new validators with old data, which a 304 would pin forever.
+        write_validators(dest, last_modified, etag)
         now = Time.utc
         @mutex.synchronize do
           @known.add(key)
@@ -162,8 +202,8 @@ module AptLarder
       @mutex.synchronize { @verified.includes?(key) }
     end
 
-    # Removes the file and its `.sha256` sidecar from disk and clears all
-    # in-memory state for *key*. Safe to call when the file does not exist.
+    # Removes the file and its sidecars from disk and clears all in-memory
+    # state for *key*. Safe to call when the file does not exist.
     def invalidate(key : String) : Nil
       # Defense in depth: a key containing ".." could resolve outside the cache
       # root and delete an arbitrary file. Callers should sanitize, but never
@@ -179,13 +219,13 @@ module AptLarder
       # double-invalidate exactly one call actually removes the file (the other
       # raises File::Error), so the count is decremented exactly once.
       data_deleted = delete_file?(path)
-      delete_file?("#{path}.sha256")
+      SIDECAR_SUFFIXES.each { |suffix| delete_file?("#{path}#{suffix}") }
       @mutex.synchronize { @entry_count -= 1 if data_deleted }
     end
 
-    # Removes every cached entry (data files and their `.sha256` sidecars) in a
-    # single directory scan and clears all in-memory state. Returns the number
-    # of data files deleted.
+    # Removes every cached entry (data files and their sidecars) in a single
+    # directory scan and clears all in-memory state. Returns the number of data
+    # files deleted.
     #
     # Unlike iterating `entries` + `invalidate`, this builds no per-entry structs
     # and holds the whole listing only as a glob stream, so it stays cheap on
@@ -194,10 +234,10 @@ module AptLarder
     def clear : Int32
       deleted = 0
       Dir.glob("#{@root}/**/*") do |path|
-        next if path.ends_with?(".sha256")
+        next if sidecar?(path)
         next unless File.file?(path)
         File.delete(path) rescue next
-        File.delete("#{path}.sha256") rescue nil
+        SIDECAR_SUFFIXES.each { |suffix| File.delete("#{path}#{suffix}") rescue nil }
         deleted += 1
       end
       @mutex.synchronize do
@@ -211,8 +251,8 @@ module AptLarder
 
     # Deletes every cached file whose mtime is older than *max_age*.
     #
-    # Skips `.sha256` sidecar files (they are removed together with their
-    # parent by `invalidate`). Returns `{files_deleted, bytes_freed}`.
+    # Skips `.sha256` and `.validators` sidecar files (they are removed
+    # together with their parent by `invalidate`). Returns `{files_deleted, bytes_freed}`.
     # Performs time-based and/or size-based eviction in a single disk scan.
     #
     # - *max_age* — delete files whose mtime is older than this span (`nil` = skip)
@@ -227,7 +267,7 @@ module AptLarder
       total_bytes = 0_i64
 
       Dir.glob("#{@root}/**/*") do |path|
-        next if path.ends_with?(".sha256")
+        next if sidecar?(path)
         next unless File.file?(path)
         info = File.info(path) rescue next
         key = path[(@root.size + 1)..]
@@ -318,7 +358,7 @@ module AptLarder
     def entries(prefix : String = "", page : Int32 = 1, per_page : Int32 = 50) : {entries: Array(EntryInfo), total: Int32}
       all = [] of EntryInfo
       Dir.glob("#{@root}/**/*") do |path|
-        next if path.ends_with?(".sha256")
+        next if sidecar?(path)
         next unless File.file?(path)
         key = path[(@root.size + 1)..]
         next unless prefix.empty? || key.starts_with?(prefix)
@@ -345,12 +385,12 @@ module AptLarder
       false
     end
 
-    # Counts data files (excluding `.sha256` sidecars) under the cache root in a
+    # Counts data files (excluding sidecars) under the cache root in a
     # single streaming glob. O(1) memory; called once at construction.
     private def count_files_on_disk : Int32
       count = 0
       Dir.glob("#{@root}/**/*") do |path|
-        next if path.ends_with?(".sha256")
+        next if sidecar?(path)
         count += 1 if File.file?(path)
       end
       count
@@ -358,6 +398,37 @@ module AptLarder
 
     private def path_for(key : String) : String
       File.join(@root, key)
+    end
+
+    # Returns `true` for the `.sha256` and `.validators` sidecars, which belong
+    # to a data file and are never entries of their own.
+    private def sidecar?(path : String) : Bool
+      SIDECAR_SUFFIXES.any? { |suffix| path.ends_with?(suffix) }
+    end
+
+    # Writes the `.validators` sidecar of the data file at *path*, or removes it
+    # when upstream sent no validator.
+    #
+    # Best effort: the data file is already published, so a failure here only
+    # logs. A missing or truncated sidecar makes the next revalidation an
+    # unconditional GET, which heals the entry. Rescues IO::Error rather than
+    # File::Error: a failed write or close (ENOSPC, EIO) raises a plain
+    # IO::Error, of which File::Error (open failures) is only a subclass.
+    private def write_validators(path : String, last_modified : String?, etag : String?) : Nil
+      sidecar = "#{path}#{VALIDATORS_SUFFIX}"
+      unless last_modified || etag
+        # Checked first: most stores (every package) have no sidecar, and
+        # delete_file? would raise and rescue a File::Error for each of them.
+        delete_file?(sidecar) if File.exists?(sidecar)
+        return
+      end
+      File.open(sidecar, "w") do |file|
+        file << "Last-Modified: " << last_modified << '\n' if last_modified
+        file << "ETag: " << etag << '\n' if etag
+      end
+    rescue ex : IO::Error
+      Log.warn { "cannot write validators for #{path}: #{ex.message}" }
+      delete_file?(sidecar) if sidecar
     end
 
     private def sha256_of(path : String) : String

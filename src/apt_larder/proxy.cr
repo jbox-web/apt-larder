@@ -313,23 +313,46 @@ module AptLarder
       end
     end
 
+    # Adds the conditional headers that revalidate an index file we already have.
+    #
+    # The validators upstream sent are replayed verbatim: the local mtime is our
+    # own clock (bumped on every 304), so a 304 from a mirror that had not synced
+    # yet would push it past the next upstream Last-Modified and pin the stale
+    # file forever. Entries without stored validators get a plain GET, and so
+    # does an orphaned sidecar whose data file is gone (a 304 would then have
+    # nothing to serve).
+    #
+    # The ETag is only a fallback: RFC 9110 lets If-None-Match override
+    # If-Modified-Since, and a round-robin node still on the previous file has
+    # another ETag, so it would answer 200 with that older file and roll the
+    # cache back. If-Modified-Since alone gets a 304 from that node instead.
+    private def add_revalidation_headers(headers : HTTP::Headers, key : String) : Nil
+      return unless @cache.modification_time?(key)
+      return unless validators = @cache.validators(key)
+      if last_modified = validators.last_modified
+        headers["If-Modified-Since"] = last_modified
+      elsif etag = validators.etag
+        headers["If-None-Match"] = etag
+      end
+    end
+
     # Fetches *upstream*, stores the response in the cache, and returns
     # {result, client_status}. Content-Length mismatches are treated as errors.
     # Upstream 4xx/5xx codes are passed through so APT sees the real reason.
     private def download(key : String, upstream : String) : {CacheResult, Int32}
       is_immutable = immutable?(key)
       headers = HTTP::Headers{"User-Agent" => USER_AGENT}
-      # Conditional revalidation for index files we already have.
-      if !is_immutable && (mtime = @cache.modification_time?(key))
-        headers["If-Modified-Since"] = HTTP.format_time(mtime)
-      end
+      add_revalidation_headers(headers, key) unless is_immutable
 
       result = {CacheResult::Error, 502}
       fetch(upstream, headers) do |response|
         case response.status_code
         when 200
           expected = response.headers["Content-Length"]?.try(&.to_i64?)
-          @cache.store(key, response.body_io)
+          # Immutable entries are never revalidated, so they keep no validators.
+          @cache.store(key, response.body_io,
+            last_modified: is_immutable ? nil : response.headers["Last-Modified"]?,
+            etag: is_immutable ? nil : response.headers["ETag"]?)
           stored = @cache.size(key)
           if expected && stored != expected
             @cache.invalidate(key)

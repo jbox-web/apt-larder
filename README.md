@@ -352,7 +352,7 @@ src/apt_larder/
   config.cr                YAML config
   admin_config.cr          Nested admin config (port, auth)
   proxy.cr                 HTTP handler: resolve → ensure_cached → serve
-  cache.cr                 Filesystem cache — atomic writes, TTL, SHA256 sidecars, LRU eviction
+  cache.cr                 Filesystem cache — atomic writes, TTL, SHA256 and validator sidecars, LRU eviction
   single_flight.cr         Concurrent deduplication — one upstream fetch per key
   connection_pool.cr       Per-host HTTP connection pool with stale-connection retry
   server.cr                HTTP server lifecycle (start/stop, graceful shutdown, background loops)
@@ -365,7 +365,7 @@ src/assets/admin/
   index.html / app.js / style.css   Web UI compiled into the binary at build time
 ```
 
-Request flow: `Proxy#handle` → `resolve` → `ensure_cached` → `SingleFlight#run` → `download` (conditional GET with `If-Modified-Since`) → `serve`.
+Request flow: `Proxy#handle` → `resolve` → `ensure_cached` → `SingleFlight#run` → `download` (conditional GET replaying the upstream `Last-Modified`/`ETag`) → `serve`.
 
 ## Alternatives
 

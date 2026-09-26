@@ -557,26 +557,160 @@ Spectator.describe AptLarder::Proxy do
   end
 
   describe "revalidation (304)" do
-    it "sends If-Modified-Since for a stale index file and handles 304" do
-      received_ims = false
+    let(reval_proxy) { AptLarder::Proxy.new(cache, AptLarder::SingleFlight.new, max_redirects: 5, index_ttl: 0, connect_timeout: 10, read_timeout: 30) }
+
+    it "sends the stored Last-Modified as If-Modified-Since and handles 304" do
+      received_ims = nil
       server = HTTP::Server.new do |ctx|
-        received_ims = ctx.request.headers.has_key?("If-Modified-Since")
+        received_ims = ctx.request.headers["If-Modified-Since"]?
         ctx.response.status = HTTP::Status::NOT_MODIFIED
       end
       addr = server.bind_tcp("127.0.0.1", 0)
       spawn { server.listen }
       Fiber.yield
 
-      reval_proxy = AptLarder::Proxy.new(cache, AptLarder::SingleFlight.new, max_redirects: 5, index_ttl: 0, connect_timeout: 10, read_timeout: 30)
-      store("127.0.0.1:#{addr.port}/dists/stable/Release", "old content")
+      key = "127.0.0.1:#{addr.port}/dists/stable/Release"
+      cache.store(key, IO::Memory.new("old content".to_slice), last_modified: "Wed, 01 Jan 2020 00:00:00 GMT")
 
       ctx = make_ctx("GET", "http://127.0.0.1:#{addr.port}/dists/stable/Release")
       reval_proxy.handle(ctx)
       server.close
 
-      expect(received_ims).to be_true
+      # Echoed verbatim, not the local file mtime (which is "now").
+      expect(received_ims).to eq("Wed, 01 Jan 2020 00:00:00 GMT")
       expect(ctx.response.status_code).to eq(200)
       expect(reval_proxy.stats[:revalidations]).to eq(1)
+    end
+
+    it "sends the stored ETag as If-None-Match" do
+      received_inm = nil
+      server = HTTP::Server.new do |ctx|
+        received_inm = ctx.request.headers["If-None-Match"]?
+        ctx.response.status = HTTP::Status::NOT_MODIFIED
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      key = "127.0.0.1:#{addr.port}/dists/stable/Release"
+      cache.store(key, IO::Memory.new("old content".to_slice), etag: %("abc123"))
+
+      reval_proxy.handle(make_ctx("GET", "http://127.0.0.1:#{addr.port}/dists/stable/Release"))
+      server.close
+
+      expect(received_inm).to eq(%("abc123"))
+    end
+
+    # RFC 9110 makes If-None-Match override If-Modified-Since. Behind a
+    # round-robin mirror, a node still on the previous file has another ETag and
+    # would answer 200 with that older file, rolling the cache back.
+    it "sends only If-Modified-Since when both validators are stored" do
+      received_inm = "unset"
+      received_ims = nil
+      server = HTTP::Server.new do |ctx|
+        received_inm = ctx.request.headers["If-None-Match"]?
+        received_ims = ctx.request.headers["If-Modified-Since"]?
+        ctx.response.status = HTTP::Status::NOT_MODIFIED
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      key = "127.0.0.1:#{addr.port}/dists/stable/Release"
+      cache.store(key, IO::Memory.new("old content".to_slice), last_modified: "Wed, 01 Jan 2020 00:00:00 GMT", etag: %("abc123"))
+
+      reval_proxy.handle(make_ctx("GET", "http://127.0.0.1:#{addr.port}/dists/stable/Release"))
+      server.close
+
+      expect(received_ims).to eq("Wed, 01 Jan 2020 00:00:00 GMT")
+      expect(received_inm).to be_nil
+    end
+
+    # A `.validators` sidecar can outlive its data file (crash inside
+    # invalidate, manual rm). A conditional GET would then get a 304 for a file
+    # we no longer have and answer 502.
+    it "sends an unconditional GET when only an orphaned validators sidecar remains" do
+      conditional = true
+      server = HTTP::Server.new do |ctx|
+        conditional = ctx.request.headers.has_key?("If-Modified-Since")
+        if conditional
+          ctx.response.status = HTTP::Status::NOT_MODIFIED
+        else
+          ctx.response.print("fresh content")
+        end
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      key = "127.0.0.1:#{addr.port}/dists/stable/Release"
+      path = File.join(tmp_dir, key)
+      Dir.mkdir_p(File.dirname(path))
+      File.write("#{path}.validators", "Last-Modified: Wed, 01 Jan 2020 00:00:00 GMT\n")
+
+      ctx = make_ctx("GET", "http://127.0.0.1:#{addr.port}/dists/stable/Release")
+      reval_proxy.handle(ctx)
+      server.close
+
+      expect(conditional).to be_false
+      expect(ctx.response.status_code).to eq(200)
+      expect(File.read(path)).to eq("fresh content")
+    end
+
+    it "sends an unconditional GET for an index entry without stored validators" do
+      conditional = true
+      server = HTTP::Server.new do |ctx|
+        conditional = ctx.request.headers.has_key?("If-Modified-Since") || ctx.request.headers.has_key?("If-None-Match")
+        ctx.response.print("fresh content")
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      store("127.0.0.1:#{addr.port}/dists/stable/Release", "legacy content")
+
+      reval_proxy.handle(make_ctx("GET", "http://127.0.0.1:#{addr.port}/dists/stable/Release"))
+      server.close
+
+      expect(conditional).to be_false
+    end
+
+    # Regression: a 304 from a mirror that had not synced yet used to reset the
+    # local mtime to "now", which was then sent as If-Modified-Since. The new
+    # upstream file (Last-Modified older than "now") was then answered with 304
+    # forever and APT kept receiving the expired Release file.
+    it "fetches a new upstream version published after a 304 from a lagging mirror" do
+      phase = :initial
+      server = HTTP::Server.new do |ctx|
+        case phase
+        when :initial
+          ctx.response.headers["Last-Modified"] = "Wed, 01 Jan 2020 00:00:00 GMT"
+          ctx.response.print("version 1")
+        when :lagging
+          ctx.response.status = HTTP::Status::NOT_MODIFIED
+        else
+          # Real If-Modified-Since semantics against the new file.
+          if (ims = ctx.request.headers["If-Modified-Since"]?) && HTTP.parse_time(ims).try { |time| time >= Time.utc(2020, 1, 2) }
+            ctx.response.status = HTTP::Status::NOT_MODIFIED
+          else
+            ctx.response.headers["Last-Modified"] = "Thu, 02 Jan 2020 00:00:00 GMT"
+            ctx.response.print("version 2")
+          end
+        end
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+      url = "http://127.0.0.1:#{addr.port}/dists/stable/Release"
+
+      reval_proxy.handle(make_ctx("GET", url))
+      phase = :lagging
+      reval_proxy.handle(make_ctx("GET", url))
+      phase = :updated
+      reval_proxy.handle(make_ctx("GET", url))
+      server.close
+
+      expect(File.read(File.join(tmp_dir, "127.0.0.1:#{addr.port}/dists/stable/Release"))).to eq("version 2")
     end
 
     it "does not send If-Modified-Since for an immutable file" do
@@ -595,6 +729,21 @@ Spectator.describe AptLarder::Proxy do
       server.close
 
       expect(received_ims).to be_false
+    end
+
+    it "does not keep validators for an immutable file (never revalidated)" do
+      server = HTTP::Server.new do |ctx|
+        ctx.response.headers["Last-Modified"] = "Wed, 01 Jan 2020 00:00:00 GMT"
+        ctx.response.print("data")
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      proxy.handle(make_ctx("GET", "http://127.0.0.1:#{addr.port}/pool/main/pkg.deb"))
+      server.close
+
+      expect(File.exists?(File.join(tmp_dir, "127.0.0.1:#{addr.port}/pool/main/pkg.deb.validators"))).to be_false
     end
   end
 

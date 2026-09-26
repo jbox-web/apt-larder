@@ -117,6 +117,99 @@ Spectator.describe AptLarder::Cache do
     end
   end
 
+  describe "upstream validators" do
+    let(last_modified) { "Wed, 01 Jan 2020 00:00:00 GMT" }
+    let(etag) { %("abc123") }
+
+    private def store_with_validators(key : String) : Nil
+      cache.store(key, IO::Memory.new("data".to_slice), last_modified: last_modified, etag: etag)
+    end
+
+    it "returns nil for an unknown key" do
+      expect(cache.validators("dists/stable/Release")).to be_nil
+    end
+
+    it "returns nil for an entry stored without validators" do
+      store("dists/stable/Release", "data")
+      expect(cache.validators("dists/stable/Release")).to be_nil
+    end
+
+    it "returns the Last-Modified and ETag given to store, verbatim" do
+      store_with_validators("dists/stable/Release")
+      expect(cache.validators("dists/stable/Release")).to eq(
+        AptLarder::Cache::Validators.new(last_modified: "Wed, 01 Jan 2020 00:00:00 GMT", etag: %("abc123"))
+      )
+    end
+
+    it "keeps a single validator when the other is absent" do
+      cache.store("dists/stable/Release", IO::Memory.new("data".to_slice), last_modified: last_modified)
+      expect(cache.validators("dists/stable/Release")).to eq(
+        AptLarder::Cache::Validators.new(last_modified: "Wed, 01 Jan 2020 00:00:00 GMT", etag: nil)
+      )
+    end
+
+    it "drops stale validators when an entry is re-stored without any" do
+      store_with_validators("dists/stable/Release")
+      store("dists/stable/Release", "new data")
+      expect(cache.validators("dists/stable/Release")).to be_nil
+    end
+
+    it "survives touch (a 304 does not change what upstream last sent)" do
+      store_with_validators("dists/stable/Release")
+      cache.touch("dists/stable/Release")
+      expect(cache.validators("dists/stable/Release")).to eq(
+        AptLarder::Cache::Validators.new(last_modified: "Wed, 01 Jan 2020 00:00:00 GMT", etag: %("abc123"))
+      )
+    end
+
+    # The data file is already published when the sidecar is written: a failure
+    # there must not turn a good download into an error, nor skip bookkeeping.
+    it "still publishes the entry when the validators sidecar cannot be written" do
+      # A directory in place of the sidecar makes File.open raise.
+      Dir.mkdir_p(File.join(tmp_dir, "dists/stable/Release.validators"))
+
+      expect { store_with_validators("dists/stable/Release") }.not_to raise_error
+      expect(cache.entry_count).to eq(1)
+      expect(cache.fresh?("dists/stable/Release", 5.minutes)).to be_true
+      expect(File.read(File.join(tmp_dir, "dists/stable/Release"))).to eq("data")
+    end
+
+    it "is removed by invalidate" do
+      store_with_validators("dists/stable/Release")
+      cache.invalidate("dists/stable/Release")
+      expect(File.exists?(File.join(tmp_dir, "dists/stable/Release.validators"))).to be_false
+    end
+
+    it "is removed by clear and not counted as an entry" do
+      store_with_validators("dists/stable/Release")
+      expect(cache.clear).to eq(1)
+      expect(File.exists?(File.join(tmp_dir, "dists/stable/Release.validators"))).to be_false
+    end
+
+    it "is removed with its evicted entry and not evicted on its own" do
+      store_with_validators("dists/stable/Release")
+      path = File.join(tmp_dir, "dists/stable/Release")
+      past = Time.utc - 8.days
+      File.utime(past, past, path)
+      File.utime(past, past, "#{path}.validators")
+
+      deleted, _ = cache.evict_stale(7.days)
+
+      expect(deleted).to eq(1)
+      expect(File.exists?("#{path}.validators")).to be_false
+    end
+
+    it "is excluded from entries" do
+      store_with_validators("dists/stable/Release")
+      expect(cache.entries[:entries].map(&.key)).to eq(["dists/stable/Release"])
+    end
+
+    it "is not counted by the entry gauge seeded at construction" do
+      store_with_validators("dists/stable/Release")
+      expect(AptLarder::Cache.new(tmp_dir).entry_count).to eq(1)
+    end
+  end
+
   # Writes a file+sidecar directly to disk, bypassing store() and @verified,
   # so that valid?() actually exercises the SHA256 verification path.
   private def plant(key : String, content : String) : Nil
