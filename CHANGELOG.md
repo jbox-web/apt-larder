@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Clients can no longer make the proxy reach a loopback, unspecified or
+  link-local address, with a `GET` or a `CONNECT`, directly or through a
+  redirect: such a target is answered `403`. Targets named in `remaps` stay
+  allowed; `allow_local_targets: true` (`APT_LARDER_ALLOW_LOCAL_TARGETS`)
+  restores the previous behaviour
+- `CONNECT` tunnels are limited to the ports of the new `connect_ports`
+  setting (`APT_LARDER_CONNECT_PORTS`), `[443]` by default
+- The UI credentials (`ui_user` / `ui_password`) now also protect `/api/*`,
+  which accepts them alongside the Bearer token: protecting the web UI no
+  longer leaves the API it drives open
+- apt-larder refuses to start with an admin server bound to a non-loopback
+  address and no credential, and with only one of `ui_user` / `ui_password` set
+- The admin API refuses state-changing requests whose `Origin` is another
+  site (`403`) and request bodies not declared as `application/json` (`415`)
+- The admin UI embeds jQuery and DataTables instead of loading them from CDNs
+- Upstream URLs are logged without their query string and credentials
+
+### Changed
+
+- **Breaking:** an HTTPS repository on a port other than 443 needs that port
+  in `connect_ports`; a mirror reached by a local address needs a `remaps`
+  entry or `allow_local_targets: true`; an admin server on `0.0.0.0` needs
+  credentials
+- **Breaking:** a config file named with `--config` must exist. Without the
+  flag, `apt-larder.yml` is used when present and the defaults otherwise
+- Eviction follows the last access: a cache hit refreshes the timestamp
+  eviction sorts on (at most once per hour per file), so `evict_after_days`
+  and `max_cache_size_gb` no longer evict packages that are served regularly.
+  Eviction also runs once at startup instead of an hour later
+- `POST /api/evict` and `apt-larder evict` no longer evict anything when
+  `evict_after_days` is `0` and no age is given; `max_age_days` must be
+  between 1 and 36500
+- Files under `/pool/` are immutable only when their name has an extension; a
+  directory path is relayed from upstream instead of being cached
+- A stale index file is served when upstream is unreachable or answers 5xx
+- An unsatisfiable `Range` is answered `416`, and a range sent with `If-Range`
+  gets the whole file
+- An upstream status other than 200, 304, 4xx and 5xx is answered `502`
+  instead of being relayed with an error body
+- The log is written synchronously, and also carries the warnings and errors
+  of the HTTP layer (unhandled exceptions answered `500`)
+- Sizes are printed in binary units with their proper names (KiB, MiB, GiB)
+  by the logs, the CLI and the web UI
+- Unknown configuration keys are reported at startup; an environment variable
+  that does not parse stops the startup with an error naming it
+- The client subcommands (`stats`, `cache`, `evict`, `healthcheck`) no longer
+  open the server's log file
+- The web UI reports failed API calls in a banner, and its "Last modified"
+  column is now "Last used"
+- CI: workflow taken from the shared binary-project template (format check,
+  docs, static build, linux arm64 and nightly legs); the release workflow runs
+  the tests first, publishes from a single job and no longer uploads the
+  `.dwarf` files
+- Docker: base images pinned by digest, Crystal held to 1.20.3; the demo
+  compose publishes its ports on the loopback interface only
+
 ### Added
 
 - Disk space used by the cache: a "Cache size" card on the dashboard, a
@@ -18,8 +76,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/api/cache` accepts `search` (case-insensitive substring of the key),
   `sort` (`key`, `size` or `mtime`) and `order` (`asc` or `desc`)
 - `apt-larder cache list` accepts `--search`, `--sort` and `--order`
+- `apt-larder stats` shows the tunnel count and the cache size
 
 ### Fixed
+
+- A cache directory configured with a trailing slash (`/var/cache/apt-larder/`)
+  made eviction report deletions without deleting anything, and the cache
+  browser list every key without its first character
+- A path cached as a file (the index page of a mirror directory) kept every
+  file below it from being stored: such an entry is now dropped when a
+  directory is needed in its place
+- A failed log write (full partition, closed stdout pipe, log file that cannot
+  be reopened after rotation) could end up blocking every request; the log
+  backend now reports the failure once on standard error and carries on
+- The admin server is bound before the service is announced as ready: a port
+  already in use fails the start instead of leaving the proxy running without it
+- A cached file that vanished from disk is downloaded again within the same
+  request instead of answering 502
+- Temporary download files are no longer listed, counted, evicted or flushed as
+  cache entries, and the ones left by a previous run are removed at startup
+- Requests waiting on a download in flight always get the status of that
+  download
+- A request failing on a freshly opened upstream connection is no longer
+  retried (the wait before the 502 was doubled)
+- Idle upstream connections to hosts that are not contacted again are closed
+  after their keep-alive instead of being kept until shutdown
+- `GET /api/cache` with a very large `page` answers an empty page instead of 500
+- `DELETE /api/cache/<directory>` answers 404 instead of 204
+- `CONNECT` with a port that is not a number answers 400 instead of tunnelling
+  to port 443
+- Listing the cache, hashing a large file and scanning the cache directory no
+  longer stall the other requests; the directory scan at startup no longer
+  delays readiness, and paging through `GET /api/cache` reuses one scan
+- systemd unit: `TimeoutStopSec` raised above the drain timeout, `After=`
+  matches `Wants=network-online.target`, documentation URL fixed
+- `extra/README.md`: the service user is created before the config file is
+  installed for its group, and the binary installation step is documented
 
 - Admin UI cache browser: only the first 200 entries were listed, the UI asking
   for 5000 per page while the API caps `per_page` at 200. The table now pages,
