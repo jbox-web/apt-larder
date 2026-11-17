@@ -19,12 +19,43 @@
     return bytes + ' B';
   }
 
+  // Shows, or with no argument hides, the banner reporting a failed API call.
+  const banner = document.getElementById('error-banner');
+  function showError(message) {
+    banner.textContent = message || '';
+    banner.hidden = !message;
+  }
+
+  // Calls the API and returns the decoded body (null on 204). Rejects with a
+  // readable message on any non-2xx answer: a refused or failed call must
+  // never be mistaken for an empty result.
   async function apiFetch(method, path, body) {
     const opts = { method, headers: { 'Content-Type': 'application/json' } };
     if (body !== undefined) opts.body = JSON.stringify(body);
-    const res = await fetch(path, opts);
+    let res;
+    try {
+      res = await fetch(path, opts);
+    } catch (e) {
+      throw new Error('Cannot reach the admin server (' + e.message + ').');
+    }
     if (res.status === 204) return null;
-    return res.json();
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* not JSON: keep null */ }
+    if (!res.ok) {
+      const reason = data && data.error ? data.error : res.statusText;
+      throw new Error(method + ' ' + path.split('?')[0] + ' failed: ' + res.status + ' ' + reason);
+    }
+    return data;
+  }
+
+  // Runs an API action started by the user, reporting its failure in the banner.
+  async function run(action) {
+    try {
+      showError();
+      await action();
+    } catch (e) {
+      showError(e.message);
+    }
   }
 
   // ── Dashboard — auto-refreshes every 10 s ────────────────────────────────
@@ -32,8 +63,9 @@
   apiFetch('GET', '/api/health').then(h => {
     const el = document.getElementById('server-version');
     if (el && h) el.textContent = 'v' + h.version;
-  }).catch(() => {});
+  }).catch(e => showError(e.message));
 
+  let statsFailing = false;
   async function refreshStats() {
     try {
       const s = await apiFetch('GET', '/api/stats');
@@ -43,11 +75,17 @@
       document.getElementById('stat-misses').textContent = s.misses.toLocaleString();
       document.getElementById('stat-rate').textContent = rate + '%';
       document.getElementById('stat-bytes').textContent = fmt(s.bytes);
-      document.getElementById('stat-cache-bytes').textContent = fmt(s.cache_bytes || 0);
+      document.getElementById('stat-cache-bytes').textContent = fmt(s.cache_bytes);
       document.getElementById('stat-errors').textContent = s.errors.toLocaleString();
       document.getElementById('stat-reval').textContent = s.revalidations.toLocaleString();
-      document.getElementById('stat-tunnels').textContent = (s.tunnels || 0).toLocaleString();
-    } catch (e) { console.error('stats fetch failed', e); }
+      document.getElementById('stat-tunnels').textContent = s.tunnels.toLocaleString();
+      // Only clear a banner this refresh raised, not one from a user action.
+      if (statsFailing) showError();
+      statsFailing = false;
+    } catch (e) {
+      statsFailing = true;
+      showError(e.message);
+    }
   }
   refreshStats();
   setInterval(refreshStats, 10000);
@@ -75,7 +113,7 @@
         data: data.entries
       });
     } catch (e) {
-      console.error('cache fetch failed', e);
+      showError(e.message);
       callback({ draw: req.draw, recordsTotal: 0, recordsFiltered: 0, data: [] });
     }
   }
@@ -87,7 +125,7 @@
       // Keys come from request paths: render them as text, never as HTML.
       { title: 'Key', data: 'key', render: DataTable.render.text() },
       { title: 'Size', data: 'size', render: (d) => fmt(d) },
-      { title: 'Last modified', data: 'mtime', render: (d) => new Date(d).toLocaleString() },
+      { title: 'Last used', data: 'mtime', render: (d) => new Date(d).toLocaleString() },
       { title: 'Type', data: 'immutable', orderable: false, searchable: false,
         render: (d) => d
           ? '<span class="badge badge-immutable">immutable</span>'
@@ -109,33 +147,40 @@
   }
 
   // Invalidate a single entry, then refresh the page it was on.
-  document.getElementById('cache-table').addEventListener('click', async ev => {
+  document.getElementById('cache-table').addEventListener('click', ev => {
     const btn = ev.target.closest('[data-key]');
     if (!btn) return;
     if (!confirm('Invalidate ' + decodeURIComponent(btn.dataset.key) + '?')) return;
-    await apiFetch('DELETE', '/api/cache/' + btn.dataset.key);
-    loadCache();
+    run(async () => {
+      await apiFetch('DELETE', '/api/cache/' + btn.dataset.key);
+      loadCache();
+    });
   });
 
-  document.getElementById('flush-all').addEventListener('click', async () => {
+  document.getElementById('flush-all').addEventListener('click', () => {
     if (!confirm('Flush the entire cache? This cannot be undone.')) return;
-    const r = await apiFetch('DELETE', '/api/cache');
-    alert('Deleted ' + r.deleted + ' entries.');
-    loadCache();
+    run(async () => {
+      const r = await apiFetch('DELETE', '/api/cache');
+      alert('Deleted ' + r.deleted + ' entries.');
+      loadCache();
+    });
   });
 
   // Refresh cache data whenever its tab is shown.
   document.querySelector('[data-tab="tab-cache"]').addEventListener('click', () => loadCache());
 
   // ── Actions ──────────────────────────────────────────────────────────────
-  document.getElementById('evict-form').addEventListener('submit', async e => {
+  document.getElementById('evict-form').addEventListener('submit', e => {
     e.preventDefault();
-    const days = parseInt(document.getElementById('evict-days').value, 10) || 30;
-    const r = await apiFetch('POST', '/api/evict', { max_age_days: days });
     const el = document.getElementById('evict-result');
-    el.style.display = 'block';
-    el.textContent = `✓ Evicted ${r.deleted} files — freed ${fmt(r.freed_bytes)}.`;
-    // Reload cache tab if it's visible to reflect evicted entries.
-    if (document.getElementById('tab-cache').classList.contains('active')) loadCache();
+    el.style.display = 'none';
+    run(async () => {
+      const days = parseInt(document.getElementById('evict-days').value, 10) || 30;
+      const r = await apiFetch('POST', '/api/evict', { max_age_days: days });
+      el.style.display = 'block';
+      el.textContent = `✓ Evicted ${r.deleted} files — freed ${fmt(r.freed_bytes)}.`;
+      // Reload cache tab if it's visible to reflect evicted entries.
+      if (document.getElementById('tab-cache').classList.contains('active')) loadCache();
+    });
   });
 }());

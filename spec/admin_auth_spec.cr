@@ -169,4 +169,76 @@ Spectator.describe "Admin auth middleware" do
       expect(ctx.response.status_code).to eq(401)
     end
   end
+
+  describe "embedded assets" do
+    let(server) { AptLarder::Admin::Server.new(AptLarder::AdminConfig.from_yaml(""), cache, proxy) }
+
+    it "serves the page shell as HTML" do
+      ctx = make_ctx("GET", "/")
+      server.handle(ctx)
+      expect(ctx.response.status_code).to eq(200)
+      expect(ctx.response.headers["Content-Type"]).to eq("text/html")
+    end
+
+    it "serves the script as JavaScript" do
+      ctx = make_ctx("GET", "/admin.js")
+      server.handle(ctx)
+      expect(ctx.response.status_code).to eq(200)
+      expect(ctx.response.headers["Content-Type"]).to eq("application/javascript")
+    end
+
+    it "serves the stylesheet as CSS" do
+      ctx = make_ctx("GET", "/admin.css")
+      server.handle(ctx)
+      expect(ctx.response.status_code).to eq(200)
+      expect(ctx.response.headers["Content-Type"]).to eq("text/css")
+    end
+
+    private def body_of(ctx : HTTP::Server::Context) : String
+      ctx.response.flush
+      ctx.response.@io.as(IO::Memory).to_s.split("\r\n\r\n", 2)[1]? || ""
+    end
+
+    # The UI must work on a network with no Internet access, and must not run
+    # code fetched from a third party on the admin origin.
+    it "serves the libraries it depends on itself" do
+      {
+        "/vendor/jquery.min.js"      => {"application/javascript", "jQuery v3.7.1"},
+        "/vendor/dataTables.min.js"  => {"application/javascript", "DataTables 2.1.8"},
+        "/vendor/dataTables.min.css" => {"text/css", "table.dataTable"},
+      }.each do |path, (content_type, marker)|
+        ctx = make_ctx("GET", path)
+        server.handle(ctx)
+        expect(ctx.response.status_code).to eq(200)
+        expect(ctx.response.headers["Content-Type"]).to eq(content_type)
+        expect(body_of(ctx)).to contain(marker)
+      end
+    end
+
+    it "references no resource outside its own origin" do
+      ctx = make_ctx("GET", "/")
+      server.handle(ctx)
+      page = body_of(ctx)
+      expect(page).not_to contain("https://")
+      expect(page).not_to contain("http://")
+      expect(page).to contain(%(src="/vendor/jquery.min.js"))
+      expect(page).to contain(%(src="/vendor/dataTables.min.js"))
+      expect(page).to contain(%(href="/vendor/dataTables.min.css"))
+    end
+
+    it "answers 404 to a path that is not one of its assets" do
+      ["/favicon.ico", "/admin.jss", "/vendor/other.js"].each do |path|
+        ctx = make_ctx("GET", path)
+        server.handle(ctx)
+        expect(ctx.response.status_code).to eq(404)
+      end
+    end
+
+    it "serves the page shell on /index.html too" do
+      ctx = make_ctx("GET", "/index.html")
+      server.handle(ctx)
+      expect(ctx.response.status_code).to eq(200)
+      expect(ctx.response.headers["Content-Type"]).to eq("text/html")
+    end
+  end
 end

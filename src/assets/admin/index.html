@@ -4,7 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>apt-larder admin</title>
-  <link rel="stylesheet" href="https://cdn.datatables.net/2.1.8/css/dataTables.dataTables.min.css">
+  <!-- No favicon: an empty data URL keeps browsers from requesting /favicon.ico. -->
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/vendor/dataTables.min.css">
   <link rel="stylesheet" href="/admin.css">
 </head>
 <body>
@@ -34,6 +36,9 @@
 
   <!-- ── Main content ───────────────────────────────────────── -->
   <main>
+
+    <!-- Shown by app.js when a call to the API fails -->
+    <div id="error-banner" class="error-banner" role="alert" hidden></div>
 
     <!-- Dashboard -->
     <div id="tab-dashboard" class="tab active">
@@ -88,7 +93,7 @@
             <tr>
               <th>Key</th>
               <th>Size</th>
-              <th>Last modified</th>
+              <th>Last used</th>
               <th>Type</th>
               <th></th>
             </tr>
@@ -107,7 +112,7 @@
             <span class="action-icon">🗑</span>
             <div>
               <div class="action-title">Evict stale files</div>
-              <div class="action-desc">Remove cached files not accessed recently.</div>
+              <div class="action-desc">Remove cached files that were neither downloaded nor served recently.</div>
             </div>
           </div>
           <form id="evict-form">
@@ -125,8 +130,8 @@
   </main>
 </div>
 
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.datatables.net/2.1.8/js/dataTables.min.js"></script>
+<script src="/vendor/jquery.min.js"></script>
+<script src="/vendor/dataTables.min.js"></script>
 <script src="/admin.js"></script>
 </body>
 </html>

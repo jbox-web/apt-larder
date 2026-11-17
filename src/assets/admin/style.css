@@ -130,3 +130,9 @@ table.dataTable tbody td { border-top: 1px solid #f1f5f9;
 .result-box { margin-top: 1rem; padding: .75rem 1rem; border-radius: 6px;
               background: #f0fdf4; color: #15803d; font-size: .875rem;
               border: 1px solid #bbf7d0; display: none; }
+
+/* ── API error banner ──────────────────────────────────────────── */
+.error-banner { margin-bottom: 1rem; padding: .75rem 1rem; border-radius: 6px;
+                background: #fdecea; color: #8a1f17; border: 1px solid #f5c2bd;
+                font-size: .875rem; }
+.error-banner[hidden] { display: none; }
