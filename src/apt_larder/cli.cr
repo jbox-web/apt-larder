@@ -14,6 +14,7 @@ module AptLarder
   #
   # - `server` — start the caching proxy
   # - `info`   — print version and Crystal build information
+  # - `licenses` — print the third-party notices embedded in the binary
   # - `healthcheck` — probe the proxy, for Docker's `HEALTHCHECK`
   # - `stats`  — show live proxy counters via the admin API
   # - `cache`  — manage the cache via the admin API (list / flush / invalidate)
@@ -77,6 +78,15 @@ module AptLarder
         puts "crystal:"
         puts Crystal::DESCRIPTION
         puts
+      end
+    end
+
+    # Prints the third-party notices embedded in the binary (`AptLarder::Licenses`).
+    class Licenses < Admiral::Command
+      define_help description: "Print the third-party notices embedded in this binary"
+
+      def run
+        print AptLarder::Licenses.text
       end
     end
 
@@ -305,6 +315,7 @@ module AptLarder
 
     register_sub_command server, Server, description: "Run AptLarder webserver"
     register_sub_command info, Info, description: "Show AptLarder information"
+    register_sub_command licenses, Licenses, description: "Print the embedded third-party notices"
     register_sub_command healthcheck, Healthcheck, description: "Probe the proxy liveness endpoint"
     register_sub_command stats, Stats, description: "Show proxy statistics"
     register_sub_command cache, Cache, description: "Manage the cache"

@@ -8,6 +8,11 @@ aqua.registries = ["https://github.com/jbox-web/aqua-registry"]
 [tools]
 crystal = "1.20.3"
 "aqua:elbywan/crystalline" = "0.18.0"
+# The release tool of every binary project: release:static and release.yml run
+# it from .crystalreleaser.yml. Served by the jbox-web aqua registry above.
+# Always an exact version: mise hides a release younger than its
+# minimum_release_age from `latest` and from ranges, never from an exact pin.
+"aqua:jbox-web/crystalreleaser" = "0.2.1"
 
 [vars]
 APP_NAME    = "apt-larder"
@@ -28,6 +33,7 @@ COMPILE_OPTS_RELEASE = "{% if exec(command='(tty -s && echo true) || echo false'
 
 [tasks."dev:build"]
 description = "Compile to development binary"
+depends = ["dev:licenses"]
 run = "crystal build {{vars.COMPILE_OPTS_DEV}} -o {{vars.OUTPUT_FILE}} {{vars.SOURCE_FILE}}"
 
 [tasks."dev:deps"]
@@ -40,18 +46,31 @@ run = "rm -rf bin/* lib/"
 
 [tasks."dev:spec"]
 description = "Run Crystal spec"
+depends = ["dev:licenses"]
 timeout = "600s"
 run = "crystal spec {{vars.SPEC_OPTS}}"
 
 [tasks."dev:spec-mt"]
 description = "Run Crystal spec (multi-threaded)"
+depends = ["dev:licenses"]
 env = { CRYSTAL_WORKERS = "4" }
 timeout = "600s"
 run = "crystal spec {{vars.SPEC_OPTS}} -Dpreview_mt"
 
 [tasks."dev:docs"]
 description = "Generate project documentation"
+depends = ["dev:licenses"]
 run = "rm -rf docs && crystal doc"
+
+# Assembles the notices a statically linked binary has to carry, from
+# licenses.manifest and licenses-spdx/. The script is
+# ~/.claude/templates/crystal/harvest-licenses.sh, and its header documents
+# both inputs; it skips cleanly when there is no manifest, so a project that
+# bakes no licenses can drop the task, the script and the depends above without
+# anything breaking in the meantime.
+[tasks."dev:licenses"]
+description = "Assemble the licenses/ folder baked into the binary"
+run = "bash scripts/harvest-licenses.sh"
 
 [tasks."dev:ameba"]
 description = "Run static code analysis"
@@ -86,6 +105,7 @@ run = "cp $HOME/.local/share/mise/installs/crystal/{{tools.crystal.version}}/emb
 
 [tasks."release:build"]
 description = "Compile to production binary"
+depends = ["dev:licenses"]
 run = '''
 crystal build {{vars.COMPILE_OPTS_RELEASE}} -o {{vars.OUTPUT_FILE}} {{vars.SOURCE_FILE}}
 # Checksum only the binary that was just built. `cd bin; for f in *` also hashed
@@ -103,13 +123,20 @@ shasum --algorithm 256 "$binary" > "$binary.sha256"
 description = "Install production dependencies"
 run = "shards install --production"
 
+# The release path, rehearsed: what .github/workflows/release.yml does on a
+# tag, on one machine and without publishing. In two steps, the way release.yml
+# does it: `build --split` builds the share of .crystalreleaser.yml this host
+# can build (the docker linux platforms everywhere, plus the native darwin one
+# on a Mac), then `release --merge` packages it. A one-step `release
+# --snapshot` would leave the split and the merge to be run for the first time
+# by the release itself. --allow-missing: one machine never builds every
+# platform. Outputs land in dist/ (gitignored), which --clean empties first.
+# Bounded like the dev tasks: an emulated compilation that hangs would
+# otherwise hold the runner until the timeout of the job.
 [tasks."release:static"]
-description = "Build static binary with Docker"
-run = '''
-docker buildx bake binary
-mv packages/linux_arm64/{{vars.APP_NAME}}-linux-arm64 packages/
-mv packages/linux_amd64/{{vars.APP_NAME}}-linux-amd64 packages/
-rmdir packages/linux_arm64/ packages/linux_amd64/
-rm -f packages/*.sha256
-cd packages; for f in *; do shasum --algorithm 256 $f > $f.sha256; done
-'''
+description = "Build the release binaries with crystalreleaser (snapshot, no publish)"
+timeout = "4800s"
+run = [
+  "crystalreleaser build --split --snapshot --clean",
+  "crystalreleaser release --merge --snapshot --allow-missing --skip=publish",
+]

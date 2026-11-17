@@ -37,6 +37,7 @@ mise dev:spec      # run tests
 mise dev:ameba     # lint (static analysis)
 mise dev:format    # format code (crystal tool format src/)
 mise dev:build     # compile dev binary to bin/apt-larder
+mise dev:licenses  # assemble licenses/ from licenses.manifest (every compiling task depends on it)
 ```
 
 Run a single spec file (extra args are forwarded to the `dev:spec` task):
@@ -44,21 +45,24 @@ Run a single spec file (extra args are forwarded to the `dev:spec` task):
 mise dev:spec spec/some_spec.cr
 ```
 
-Release builds (static binaries) use Docker:
+Release builds use [crystalreleaser](https://github.com/jbox-web/crystalreleaser), pinned in `mise.toml` and configured by `.crystalreleaser.yml`:
 ```sh
-mise release:static   # builds static Linux binaries via docker buildx bake
+mise release:static   # snapshot of the release path into dist/: static Linux binaries in docker, plus the native darwin one on a Mac
 ```
+
+A `v*` tag runs `.github/workflows/release.yml`: `crystalreleaser build --split` on ubuntu (linux amd64 + arm64), macos-26 and macos-26-intel, then `crystalreleaser release --merge` publishes `apt-larder-<os>-<arch>` and its `.sha256`. The darwin binaries link Homebrew's `openssl@4` statically (`static_libs`), and crystalreleaser fails the build if one still loads a library macOS does not ship.
 
 ## Architecture
 
 ```
 src/apt-larder.cr          Entry point: loads deps, config, log setup, starts CLI
 src/apt_larder/
-  cli.cr                   Admiral CLI — subcommands: server, info, healthcheck, stats, cache (list/flush/invalidate), evict
+  cli.cr                   Admiral CLI — subcommands: server, info, licenses, healthcheck, stats, cache (list/flush/invalidate), evict
   healthcheck.cr           Self-probe for Docker HEALTHCHECK — exits 0/1 on the proxy /_health
   config.cr                YAML config (all fields documented below), env overrides, validation
   admin_config.cr          AdminConfig — nested YAML config for the admin server
   helpers.cr               Immutability heuristic, CONNECT target parsing, local-address test, byte formatting
+  licenses.cr              Third-party notices embedded at compile time from licenses/ (scripts/harvest-licenses.sh, licenses.manifest)
   log_backend.cr           Synchronous Log backend that survives a failing destination; reopen for rotation
   server.cr                HTTP server lifecycle (start/stop, graceful shutdown, background loops)
   proxy.cr                 HTTP handler: resolves request → cache key + upstream URL, target policy, triggers fetch, serves file; CONNECT tunnels
@@ -105,6 +109,7 @@ Key spec files:
 - `spec/cache_spec.cr` — cache operations, integrity, eviction
 - `spec/server_spec.cr` — server lifecycle: bind, startup eviction, admin bind failure
 - `spec/log_backend_spec.cr` — log backend, log binding, config file lookup
+- `spec/licenses_spec.cr` — embedded third-party notices and the `licenses` output
 - `spec/admin_api_spec.cr` — REST API endpoints
 - `spec/admin_auth_spec.cr` — Bearer and Basic auth, embedded assets
 - `spec/admin_client_spec.cr` — admin API client used by the CLI
@@ -144,8 +149,8 @@ admin:
 
 ## Deployment
 
-The Docker image (`docker-bake.hcl`) produces a distroless static binary image. The runtime image requires `ca-certificates` to be available for TLS certificate verification when following http→https redirects.
+The Docker image (`docker-bake.hcl`, target `docker-image`) produces a distroless image around a static binary built in the `Dockerfile` itself; the released binaries come from crystalreleaser instead. The runtime image requires `ca-certificates` to be available for TLS certificate verification when following http→https redirects.
 
 For the admin UI to be reachable from the host when running in Docker, set `admin.host: "0.0.0.0"` in the config, configure credentials (mandatory on a non-loopback host) and expose port 8080.
 
-The base images of the `Dockerfile` are pinned by digest; `.github/workflows/ci.yml` is the canonical `ci-binary.yml` template, copied verbatim.
+The base images of the `Dockerfile` are pinned by digest; `.github/workflows/ci.yml` and `release.yml` are the canonical `ci-binary.yml` and `release.yml` templates, copied verbatim; `.crystalreleaser.yml` is the `crystalreleaser.yml` template, only the project name differs.

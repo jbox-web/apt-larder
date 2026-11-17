@@ -97,7 +97,7 @@ For production, build the image (`apt-larder:latest`, distroless) or the static 
 
 ```sh
 mise dev:docker-image  # builds the apt-larder:latest image via docker buildx bake
-mise release:static    # builds the linux/amd64 and linux/arm64 static binaries into packages/
+mise release:static    # builds the static linux/amd64 and linux/arm64 binaries (plus the native one on a Mac) into dist/, with crystalreleaser
 ```
 
 Mount a config file, a cache volume, and a logs volume. The image runs as uid 65532 (`nonroot`): the two host directories must belong to it.
@@ -219,6 +219,7 @@ The local-address check resolves the target name, and the connection resolves it
 ```sh
 apt-larder server [-c apt-larder.yml]        # run the proxy
 apt-larder info                              # version and build information
+apt-larder licenses                          # third-party notices embedded in the binary
 apt-larder healthcheck [-c apt-larder.yml]   # probe the proxy, exit 0 or 1
 ```
 

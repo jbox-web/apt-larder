@@ -9,10 +9,10 @@
 # and replace it here (same for the distroless image below).
 FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS crystal
 
-# crystal is held to the patch release pinned in mise.toml, so the release
-# binaries come from the compiler the test suite ran on.
+# crystal is held to the patch release pinned in mise.toml, so the image
+# binary comes from the compiler the test suite ran on.
 RUN apk add --update --no-cache \
-  make \
+  bash \
   crystal=~1.20.3 \
   shards \
   gc-dev \
@@ -37,37 +37,24 @@ RUN apk add --update --no-cache \
 # BUILD #
 #########
 
+# The static binary of the docker image only. The released binaries are built
+# by crystalreleaser (.crystalreleaser.yml), in an image of its own.
 FROM crystal AS build-binary-file
 
-# Fetch platforms variables from ARGS
-ARG TARGETPLATFORM
-ARG TARGETOS
-ARG TARGETARCH
-ARG TARGETVARIANT
-
-# Export them to build binary files with the right name: apt-larder-linux-amd64
-ENV \
-  TARGETPLATFORM=${TARGETPLATFORM} \
-  TARGETOS=${TARGETOS} \
-  TARGETARCH=${TARGETARCH} \
-  TARGETVARIANT=${TARGETVARIANT}
-
-# Set build environment
 WORKDIR /build
 COPY .git/ /build/.git/
-COPY shard.yml shard.lock /build/
-COPY Makefile.release /build/Makefile
+COPY shard.yml shard.lock LICENSE licenses.manifest /build/
+COPY licenses-spdx/ /build/licenses-spdx/
+COPY licenses-upstream/ /build/licenses-upstream/
+COPY scripts/harvest-licenses.sh /build/scripts/
 COPY src/ /build/src/
-RUN mkdir /build/bin
 
-# Build the binary
-RUN make release
-
-# Extract binary from Docker image
-FROM scratch AS binary-file
-ARG TARGETOS
-ARG TARGETARCH
-COPY --from=build-binary-file /build/bin/apt-larder-${TARGETOS}-${TARGETARCH} /
+# The harvest reads lib/<shard>/LICENSE: shards first. licenses/ is read by
+# the compiler (AptLarder::Licenses), so it must exist before the build.
+RUN mkdir -p bin \
+ && shards install --production \
+ && bash scripts/harvest-licenses.sh \
+ && crystal build --threads 4 --release --error-trace --static -o bin/apt-larder src/apt-larder.cr
 
 ###########
 # RUNTIME #
@@ -76,12 +63,8 @@ COPY --from=build-binary-file /build/bin/apt-larder-${TARGETOS}-${TARGETARCH} /
 # Build distroless images \o/
 FROM gcr.io/distroless/static-debian12:latest@sha256:d75cdd72874d4790092fcb1b058493ecf6bb5bf2b2b897045b00ff01d91843f2 AS docker-image
 
-# Fetch platforms variables from ARGS
-ARG TARGETOS
-ARG TARGETARCH
-
-# Grab apt-larder binary from **binary-file** step and inject it in the final image
-COPY --from=build-binary-file /build/bin/apt-larder-${TARGETOS}-${TARGETARCH} /usr/bin/apt-larder
+# Grab the apt-larder binary from the build step and inject it in the final image
+COPY --from=build-binary-file /build/bin/apt-larder /usr/bin/apt-larder
 
 # Set runtime environment
 USER nonroot

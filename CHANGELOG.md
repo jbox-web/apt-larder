@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `apt-larder licenses` prints the third-party notices embedded in the
+  binary: the runtime shards, the C libraries it links statically (OpenSSL,
+  PCRE2, libyaml, zlib, Boehm GC, musl, libgcc) and the Crystal runtime,
+  assembled at build time from `licenses.manifest`
+
+### Fixed
+
+- The macOS binaries no longer depend on Homebrew's OpenSSL: they link
+  `openssl@4` statically, the same on arm64 and Intel, and only load
+  libraries macOS ships. Those of 2.0.0 only started on a Mac with Homebrew's
+  `openssl@4` (arm64) or `openssl@3` (Intel) installed at its default path
+
+### Changed
+
+- Releases are built and published by crystalreleaser
+  (`.crystalreleaser.yml`, `.github/workflows/release.yml`); the assets keep
+  their names, `apt-larder-<os>-<arch>` and its `.sha256`
+
 ## [2.0.0] - 2026-11-17
 
 ### Security

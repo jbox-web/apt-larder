@@ -3,8 +3,8 @@ name: CI
 
 # Binary-project variant of ci.yml: identical, plus the
 # build_static_binaries job. Use this one when the project ships binaries
-# (docker-bake.hcl + Dockerfile + Makefile.release + a release:static task);
-# use ci.yml for a library shard, which has no static build.
+# (.crystalreleaser.yml + release.yml + the release:static task of the
+# templates); use ci.yml for a library shard, which has no static build.
 # Any change common to both must be made in ci.yml first.
 
 permissions: {}
@@ -96,10 +96,13 @@ jobs:
       - name: Build API docs
         run: mise dev:docs
 
-  # The release path (Dockerfile + Makefile.release + docker-bake.hcl) is
-  # otherwise only exercised on a tag push, i.e. during the release itself: a
-  # break there ships a release short of a platform. Building it here moves the
-  # failure back to the pull request.
+  # The release path (crystalreleaser, .crystalreleaser.yml) is otherwise only
+  # exercised on a tag push, i.e. during the release itself: a break there
+  # ships a release short of a platform. Building it here moves the failure
+  # back to the pull request. `mise release:static` runs the two steps of
+  # release.yml on one runner: `build --split --snapshot` builds the static
+  # linux binaries in docker (arm64 through QEMU), then `release --merge
+  # --snapshot --skip=publish` packages them.
   build_static_binaries:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -108,10 +111,14 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+          # crystalreleaser refuses a shallow clone for a release, and a
+          # snapshot without a tag in reach starts its version from 0.0.0.
+          fetch-depth: 0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
 
+      # crystalreleaser's emulation check reads `docker buildx ls`.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -120,6 +127,18 @@ jobs:
 
       - name: Build static binaries
         run: mise release:static
+
+      # An exit code of 0 says the binaries were linked, not that they start.
+      # The arm64 one runs through the QEMU handlers installed above. The glob
+      # stands for the project's binary: dist/<os>_<arch>/ holds only it and
+      # its checksum.
+      - name: Run the binaries just built
+        run: |
+          for arch in amd64 arm64; do
+            bin="$(find "dist/linux_$arch" -type f -perm -u+x ! -name '*.sha256' | head -n 1)"
+            test -n "$bin" || { echo "no binary under dist/linux_$arch" >&2; exit 1; }
+            "$bin" --version
+          done
 
   test_linux_amd64:
     runs-on: ubuntu-24.04
