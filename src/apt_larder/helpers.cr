@@ -30,12 +30,13 @@ module AptLarder
     sep.empty? ? {post, 443} : {pre, post.to_i? || 443}
   end
 
-  # Formats *n* bytes as a human-readable string (`1.2 KB`, `45.3 MB`, …).
+  # Formats *n* bytes as a human-readable string in binary units
+  # (`1.2 KiB`, `45.3 MiB`, …) — the same units and labels as the web UI.
   def self.format_bytes(n : Int64) : String
     case n
-    when .>= 1_073_741_824 then "#{(n / 1_073_741_824.0).round(1)} GB"
-    when .>= 1_048_576     then "#{(n / 1_048_576.0).round(1)} MB"
-    when .>= 1_024         then "#{(n / 1_024.0).round(1)} KB"
+    when .>= 1_073_741_824 then "#{(n / 1_073_741_824.0).round(1)} GiB"
+    when .>= 1_048_576     then "#{(n / 1_048_576.0).round(1)} MiB"
+    when .>= 1_024         then "#{(n / 1_024.0).round(1)} KiB"
     else                        "#{n} B"
     end
   end

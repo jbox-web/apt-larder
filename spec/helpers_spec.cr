@@ -25,3 +25,15 @@ Spectator.describe "AptLarder.parse_connect_target" do
     expect(AptLarder.parse_connect_target("host:bogus")).to eq({"host", 443})
   end
 end
+
+Spectator.describe "AptLarder.format_bytes" do
+  it "switches unit at each power of 1024" do
+    expect(AptLarder.format_bytes(0_i64)).to eq("0 B")
+    expect(AptLarder.format_bytes(1023_i64)).to eq("1023 B")
+    expect(AptLarder.format_bytes(1024_i64)).to eq("1.0 KiB")
+    expect(AptLarder.format_bytes(1_048_575_i64)).to eq("1024.0 KiB")
+    expect(AptLarder.format_bytes(1_048_576_i64)).to eq("1.0 MiB")
+    expect(AptLarder.format_bytes(1_073_741_824_i64)).to eq("1.0 GiB")
+    expect(AptLarder.format_bytes(1_610_612_736_i64)).to eq("1.5 GiB")
+  end
+end
