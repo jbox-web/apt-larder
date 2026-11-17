@@ -15,6 +15,7 @@ module AptLarder
       def initialize(@config : AdminConfig, cache : Cache, proxy : Proxy, evict_after_days : Int32 = 30)
         @api = Api.new(cache, proxy, evict_after_days)
         @handler = Handler.new
+        @http_server = nil.as(HTTP::Server?)
       end
 
       # Handles a single request: authenticates then dispatches.
@@ -41,12 +42,28 @@ module AptLarder
         end
       end
 
-      # Starts the admin HTTP server. Blocks until the server is closed.
-      def start : Nil
+      # Binds the admin HTTP server and returns the address it listens on.
+      #
+      # Separate from `listen` so the caller can bind synchronously during its
+      # own startup: a port already in use or an invalid address then raises
+      # there (`Socket::BindError`), instead of dying unnoticed in the fiber
+      # that serves the requests.
+      def bind : Socket::IPAddress
         server = HTTP::Server.new { |ctx| handle(ctx) }
         addr = server.bind_tcp(@config.host, @config.port)
+        @http_server = server
         Log.info { "admin server listening on http://#{addr}" }
-        server.listen
+        addr
+      end
+
+      # Serves requests on the bound address. Blocks until `close` is called.
+      def listen : Nil
+        @http_server.try(&.listen)
+      end
+
+      # Stops accepting admin connections.
+      def close : Nil
+        @http_server.try { |server| server.close unless server.closed? }
       end
 
       # Returns `true` when the request may use the API: nothing is configured,
