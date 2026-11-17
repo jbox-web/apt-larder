@@ -260,16 +260,43 @@ Spectator.describe AptLarder::Admin::Client do
   end
 
   describe "timeout" do
-    # The bound the healthcheck subcommand depends on. Connecting to a routable
-    # but silent address is what makes a connect actually hang; 203.0.113.0/24
-    # is the TEST-NET-3 block, reserved by RFC 5737 and never routed.
-    it "gives up on connect once the timeout elapses" do
-      config = AptLarder::AdminConfig.from_yaml(%(enabled: true\nhost: "203.0.113.1"\nport: 8080\n))
-      elapsed = Time.measure do
-        expect { described_class.new(config, timeout: 200.milliseconds).health }
-          .to raise_error(AptLarder::Admin::Error)
+    # The bound the healthcheck subcommand depends on. A listener that accepts
+    # the connection and then stays silent is what makes a request hang
+    # without any network involved: the kernel completes the handshake, and
+    # the response never comes.
+    it "gives up on a server that accepts and never answers once the timeout elapses" do
+      listener = TCPServer.new("127.0.0.1", 0)
+      held = [] of TCPSocket
+      spawn do
+        while peer = listener.accept?
+          held << peer
+        end
       end
-      expect(elapsed).to be < 3.seconds
+      config = config_for(listener.local_address.port)
+
+      # The call runs in its own fiber so that a client without any timeout
+      # fails this example instead of hanging the suite.
+      outcome = Channel(Exception?).new(1)
+      started = Time.instant
+      spawn do
+        described_class.new(config, timeout: 200.milliseconds).health
+        outcome.send(nil)
+      rescue ex
+        outcome.send(ex)
+      end
+
+      begin
+        select
+        when error = outcome.receive
+          expect(error).to be_a(AptLarder::Admin::Error)
+          expect(started.elapsed).to be < 3.seconds
+        when timeout(3.seconds)
+          fail "the request was still waiting after 3 seconds"
+        end
+      ensure
+        listener.close
+        held.each(&.close)
+      end
     end
   end
 end

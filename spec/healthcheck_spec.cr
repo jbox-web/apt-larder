@@ -1,4 +1,5 @@
 require "./spec_helper"
+require "file_utils"
 
 Spectator.describe AptLarder::Healthcheck do
   let(io) { IO::Memory.new }
@@ -12,8 +13,11 @@ Spectator.describe AptLarder::Healthcheck do
 
   # Mirrors the upstream harness in `proxy_spec.cr`: bind on port 0 so the
   # kernel picks a free one, serve from a spawned fiber, close when done.
-  private def with_proxy_server(status : Int32, &)
+  # Every resource the stub is asked for is appended to *requested*, so an
+  # example can assert what the probe actually put on the wire.
+  private def with_proxy_server(status : Int32, requested : Array(String) = [] of String, &)
     server = HTTP::Server.new do |ctx|
+      requested << ctx.request.resource
       ctx.response.status_code = status
       ctx.response.content_type = "text/plain"
       ctx.response.print("ok")
@@ -25,6 +29,24 @@ Spectator.describe AptLarder::Healthcheck do
       yield addr.port
     ensure
       server.close
+    end
+  end
+
+  # Serves a real `AptLarder::Proxy` — the handler the released binary runs —
+  # on a free loopback port.
+  private def with_real_proxy(&)
+    cache_dir = spec_tmp_dir("healthcheck")
+    proxy = AptLarder::Proxy.new(AptLarder::Cache.new(cache_dir), AptLarder::SingleFlight.new,
+      max_redirects: 5, index_ttl: 5, connect_timeout: 1, read_timeout: 1)
+    server = HTTP::Server.new { |ctx| proxy.handle(ctx) }
+    addr = server.bind_tcp("127.0.0.1", 0)
+    spawn { server.listen }
+    Fiber.yield
+    begin
+      yield addr.port, proxy
+    ensure
+      server.close
+      FileUtils.rm_rf(cache_dir)
     end
   end
 
@@ -43,7 +65,31 @@ Spectator.describe AptLarder::Healthcheck do
       end
       expect(code).to eq(0)
       expect(io.to_s).to contain("healthy")
-      expect(io.to_s).to contain(AptLarder::Proxy::HEALTH_PATH)
+      expect(io.to_s).to contain("/_health")
+    end
+
+    # The stub answers 200 on every path: only the recorded resource tells
+    # which one the probe asked for.
+    it "requests exactly /_health, once" do
+      requested = [] of String
+      with_proxy_server(200, requested) do |port|
+        described_class.run(config(port), io)
+      end
+      expect(requested).to eq(["/_health"])
+    end
+
+    # End to end against the handler the binary serves: the path the probe
+    # asks for has to be the one the proxy answers, without resolving it to a
+    # mirror and without booking it.
+    it "returns 0 against a real proxy handler" do
+      errors = -1_i64
+      code = with_real_proxy do |port, proxy|
+        result = described_class.run(config(port), io)
+        errors = proxy.stats[:errors]
+        result
+      end
+      expect(code).to eq(0)
+      expect(errors).to eq(0)
     end
 
     it "returns 1 when the proxy answers non-2xx" do
