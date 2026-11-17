@@ -15,11 +15,20 @@ module AptLarder
     # | DELETE | `/api/cache` | Flush the entire cache |
     # | DELETE | `/api/cache/:key` | Invalidate one entry (URL-encoded key) |
     # | POST | `/api/evict` | Run eviction with optional `max_age_days` |
+    #
+    # State-changing requests (anything but GET/HEAD) carrying an `Origin`
+    # header that is not the admin server itself are refused with 403, and
+    # request bodies must be declared as JSON: together they keep a web page
+    # open in the operator's browser from driving the API cross-site.
     class Api
       Log = ::Log.for("apt-larder.admin")
 
       # Upper bound of `per_page` on `GET /api/cache`.
       MAX_PER_PAGE = 200
+
+      # Upper bound of `max_age_days` on `POST /api/evict` (a century). Keeps
+      # the cutoff computation far away from the limits of `Time`.
+      MAX_EVICT_DAYS = 36_500
 
       def initialize(@cache : Cache, @proxy : Proxy, @default_evict_days : Int32 = 30)
       end
@@ -31,6 +40,12 @@ module AptLarder
         res.content_type = "application/json"
 
         path = req.path
+
+        unless same_origin?(req)
+          error(res, HTTP::Status::FORBIDDEN, "cross-origin request refused")
+          res.flush
+          return
+        end
 
         case {req.method, path}
         when {"GET", "/api/health"}
@@ -49,11 +64,28 @@ module AptLarder
           if req.method == "DELETE" && path.starts_with?("/api/cache/")
             handle_invalidate(path["/api/cache/".size..], res)
           else
-            res.status = HTTP::Status::NOT_FOUND
-            json(res) { |j| j.object { j.field "error", "not found" } }
+            error(res, HTTP::Status::NOT_FOUND, "not found")
           end
         end
         res.flush
+      end
+
+      # Returns `false` for a state-changing request sent by a page of another
+      # origin. Browsers attach `Origin` to every cross-origin POST/DELETE, and
+      # to same-origin ones too: it must then name the very host the request
+      # was addressed to. Requests without `Origin` (curl, the CLI, Prometheus)
+      # are not browser-driven and pass.
+      private def same_origin?(req : HTTP::Request) : Bool
+        return true if req.method.in?("GET", "HEAD")
+        origin = req.headers["Origin"]?
+        return true unless origin
+        host = req.headers["Host"]?
+        return false unless host
+        uri = URI.parse(origin) rescue return false
+        origin_host = uri.host
+        return false unless origin_host
+        authority = uri.port ? "#{origin_host}:#{uri.port}" : origin_host
+        authority.compare(host, case_insensitive: true) == 0
       end
 
       private def handle_health(res : HTTP::Server::Response) : Nil
@@ -145,15 +177,14 @@ module AptLarder
         # Reject path traversal before touching the filesystem — a decoded key
         # like "../../etc/passwd" must never reach exists?/invalidate. Reject
         # sidecar keys too: a sidecar is not an entry, and deleting a .sha256
-        # alone would leave its data file unverified (valid? trusts it).
-        if key.includes?("..") || Cache.sidecar?(key)
-          res.status = HTTP::Status::BAD_REQUEST
-          json(res) { |j| j.object { j.field "error", "invalid key" } }
+        # alone would leave its data file unverified (valid? trusts it). Same
+        # for a temporary download file: it belongs to a download in flight.
+        if key.includes?("..") || Cache.sidecar?(key) || Cache.temp?(key)
+          error(res, HTTP::Status::BAD_REQUEST, "invalid key")
           return
         end
         unless @cache.exists?(key)
-          res.status = HTTP::Status::NOT_FOUND
-          json(res) { |j| j.object { j.field "error", "not found" } }
+          error(res, HTTP::Status::NOT_FOUND, "not found")
           return
         end
         @cache.invalidate(key)
@@ -162,20 +193,47 @@ module AptLarder
 
       private def handle_evict(req : HTTP::Request, res : HTTP::Server::Response) : Nil
         max_age_days = @default_evict_days
-        if body = req.body.try(&.gets_to_end)
-          unless body.empty?
-            if (parsed = JSON.parse(body) rescue nil) && (days = parsed["max_age_days"]?.try(&.as_i?))
-              max_age_days = days
+        body = req.body.try(&.gets_to_end) || ""
+        unless body.empty?
+          unless json_body?(req)
+            error(res, HTTP::Status::UNSUPPORTED_MEDIA_TYPE, "body must be application/json")
+            return
+          end
+          fields = (JSON.parse(body) rescue nil).try(&.as_h?)
+          unless fields
+            error(res, HTTP::Status::BAD_REQUEST, "body must be a JSON object")
+            return
+          end
+          if value = fields["max_age_days"]?
+            days = value.as_i?
+            unless days && days.in?(1..MAX_EVICT_DAYS)
+              error(res, HTTP::Status::BAD_REQUEST, "max_age_days must be an integer between 1 and #{MAX_EVICT_DAYS}")
+              return
             end
+            max_age_days = days
           end
         end
-        deleted, freed = @cache.evict_stale(max_age_days.days)
+        # No explicit age and `evict_after_days: 0`: time-based eviction is
+        # disabled, which must never read as "everything is older than 0 days".
+        deleted, freed = max_age_days > 0 ? @cache.evict_stale(max_age_days.days) : {0, 0_i64}
         json(res) do |j|
           j.object do
             j.field "deleted", deleted
             j.field "freed_bytes", freed
           end
         end
+      end
+
+      # `true` when the request declares a JSON body (parameters such as
+      # `; charset=utf-8` are ignored).
+      private def json_body?(req : HTTP::Request) : Bool
+        media_type = req.headers["Content-Type"]?.try(&.partition(';')[0].strip.downcase)
+        media_type == "application/json"
+      end
+
+      private def error(res : HTTP::Server::Response, status : HTTP::Status, message : String) : Nil
+        res.status = status
+        json(res) { |j| j.object { j.field "error", message } }
       end
 
       private def json(res : HTTP::Server::Response, &) : Nil
