@@ -72,6 +72,7 @@ module AptLarder
             j.field "errors", s[:errors]
             j.field "bytes", s[:bytes]
             j.field "tunnels", s[:tunnels]
+            j.field "cache_bytes", @cache.total_bytes
           end
         end
       end
@@ -89,6 +90,7 @@ module AptLarder
           {"bytes_served_total", "counter", "Total bytes written to clients from cache.", s[:bytes]},
           {"tunnels_total", "counter", "Total CONNECT tunnels successfully established.", s[:tunnels]},
           {"cache_entries", "gauge", "Current number of files tracked in the cache.", entries.to_i64},
+          {"cache_bytes", "gauge", "Current disk space used by the cached files, in bytes.", @cache.total_bytes},
         }.each do |name, type, help, value|
           io << "# HELP apt_larder_#{name} #{help}\n"
           io << "# TYPE apt_larder_#{name} #{type}\n"

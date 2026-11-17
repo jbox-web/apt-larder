@@ -40,11 +40,12 @@ module AptLarder
       @known = Set(String).new
       @mtime_cache = {} of String => Time
       @verified = Set(String).new
-      # Authoritative entry gauge, seeded from a one-time count-only disk scan so
-      # the Prometheus `cache_entries` gauge reflects a warm cache from boot
-      # instead of starting at 0 and climbing as requests arrive. O(1) memory
-      # (a single integer, no Set), and re-anchored on every eviction pass.
-      @entry_count = count_files_on_disk
+      # Authoritative entry and size gauges, seeded from a one-time disk scan so
+      # the Prometheus `cache_entries` and `cache_bytes` gauges reflect a warm
+      # cache from boot instead of starting at 0 and climbing as requests
+      # arrive. O(1) memory (two integers, no Set), and re-anchored on every
+      # eviction pass.
+      @entry_count, @total_bytes = scan_disk
     end
 
     # Returns `true` if a file for *key* exists on disk.
@@ -136,12 +137,14 @@ module AptLarder
       begin
         buf = Bytes.new(COPY_BUFFER_SIZE)
         digest = Digest::SHA256.new
+        written = 0_i64
         File.open(tmp, "w") do |file|
           loop do
             n = io.read(buf)
             break if n == 0
             file.write(buf[0, n])
             digest.update(buf[0, n])
+            written += n
           end
         end
         hash = digest.hexfinal
@@ -152,9 +155,10 @@ module AptLarder
         # file with no sidecar, which valid? would trust and serve unverified.
         File.write("#{dest}.sha256", hash)
         # Detect an overwrite before publishing so the entry gauge counts a
-        # given key once. Single-flight guarantees no concurrent store for the
-        # same key, so this check is race-free.
-        is_new = !File.exists?(dest)
+        # given key once and the size gauge swaps the old size for the new one.
+        # Single-flight guarantees no concurrent store for the same key, so
+        # this check is race-free.
+        previous_size = File.info?(dest).try(&.size)
         File.rename(tmp, dest)
         # Written after the data file is published. A crash in between leaves
         # the new data with the previous (or no) validators: the next
@@ -167,7 +171,8 @@ module AptLarder
           @mtime_cache[key] = now
           # just written and hashed — no need to re-verify on first serve
           @verified.add(key)
-          @entry_count += 1 if is_new
+          @entry_count += 1 unless previous_size
+          @total_bytes += written - (previous_size || 0_i64)
         end
       rescue ex
         File.delete(tmp) if File.exists?(tmp)
@@ -226,12 +231,19 @@ module AptLarder
         @verified.delete(key)
       end
       path = path_for(key)
-      # The delete result is the source of truth for the gauge: on a concurrent
+      # Read before the delete: the size is gone once the file is.
+      size = File.info?(path).try(&.size) || 0_i64
+      # The delete result is the source of truth for the gauges: on a concurrent
       # double-invalidate exactly one call actually removes the file (the other
-      # raises File::Error), so the count is decremented exactly once.
+      # raises File::Error), so they are decremented exactly once.
       data_deleted = delete_file?(path)
       SIDECAR_SUFFIXES.each { |suffix| delete_file?("#{path}#{suffix}") }
-      @mutex.synchronize { @entry_count -= 1 if data_deleted }
+      @mutex.synchronize do
+        if data_deleted
+          @entry_count -= 1
+          @total_bytes -= size
+        end
+      end
     end
 
     # Removes every cached entry (data files and their sidecars) in a single
@@ -256,6 +268,7 @@ module AptLarder
         @mtime_cache.clear
         @verified.clear
         @entry_count = 0
+        @total_bytes = 0_i64
       end
       deleted
     end
@@ -286,10 +299,13 @@ module AptLarder
         total_bytes += info.size
       end
 
-      # Re-anchor the gauge to the authoritative on-disk count seen by this scan,
-      # correcting any drift accumulated since boot. The invalidate calls below
-      # each decrement it further as files are removed.
-      @mutex.synchronize { @entry_count = candidates.size }
+      # Re-anchor the gauges to the authoritative on-disk count and size seen by
+      # this scan, correcting any drift accumulated since boot. The invalidate
+      # calls below each decrement them further as files are removed.
+      @mutex.synchronize do
+        @entry_count = candidates.size
+        @total_bytes = total_bytes
+      end
 
       deleted = 0
       freed = 0_i64
@@ -339,6 +355,15 @@ module AptLarder
     # passes if files are added or removed out-of-band.
     def entry_count : Int32
       @mutex.synchronize { @entry_count }
+    end
+
+    # Returns the summed byte size of the cached data files, sidecars excluded:
+    # the same figure `max_cache_size_gb` is enforced against.
+    #
+    # Fast (no disk scan): maintained alongside `entry_count`, by the same
+    # operations and with the same drift caveat.
+    def total_bytes : Int64
+      @mutex.synchronize { @total_bytes }
     end
 
     # Returns the byte size of the cached file for *key*.
@@ -396,15 +421,20 @@ module AptLarder
       false
     end
 
-    # Counts data files (excluding sidecars) under the cache root in a
-    # single streaming glob. O(1) memory; called once at construction.
-    private def count_files_on_disk : Int32
+    # Counts data files (excluding sidecars) under the cache root and sums
+    # their sizes in a single streaming glob. O(1) memory; called once at
+    # construction. Returns `{count, bytes}`.
+    private def scan_disk : {Int32, Int64}
       count = 0
+      bytes = 0_i64
       Dir.glob("#{@root}/**/*") do |path|
         next if Cache.sidecar?(path)
-        count += 1 if File.file?(path)
+        info = File.info?(path)
+        next unless info && info.file?
+        count += 1
+        bytes += info.size
       end
-      count
+      {count, bytes}
     end
 
     private def path_for(key : String) : String

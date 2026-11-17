@@ -186,7 +186,7 @@ services:
 
 When `admin.enabled: true`, a second server starts on `admin.port` with:
 
-- **Web UI** at `/` — dashboard (hit rate, bytes served, …), cache browser with search/sort/pagination (DataTables), and an eviction form.
+- **Web UI** at `/` — dashboard (hit rate, bytes served, cache size, …), cache browser with search/sort/pagination (DataTables), and an eviction form.
 - **REST API** at `/api/*` — programmatic cache management.
 
 ### API endpoints
@@ -194,8 +194,8 @@ When `admin.enabled: true`, a second server starts on `admin.port` with:
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/health` | `{"status":"ok","version":"..."}` |
-| `GET` | `/api/stats` | Cumulative counters: hits, misses, revalidations, errors, bytes |
-| `GET` | `/api/metrics` | Prometheus text format (counters + cache_entries gauge) |
+| `GET` | `/api/stats` | Cumulative counters (hits, misses, revalidations, errors, bytes, tunnels) and `cache_bytes`, the disk space used by the cache |
+| `GET` | `/api/metrics` | Prometheus text format (counters + cache_entries and cache_bytes gauges) |
 | `GET` | `/api/cache` | Paginated entry list (`?prefix=&page=&per_page=`) |
 | `DELETE` | `/api/cache` | Flush the entire cache |
 | `DELETE` | `/api/cache/:key` | Invalidate one entry (key URL-encoded) |
@@ -223,9 +223,15 @@ apt_larder_errors_total 3
 # HELP apt_larder_bytes_served_total Total bytes written to clients from cache.
 # TYPE apt_larder_bytes_served_total counter
 apt_larder_bytes_served_total 4398046511
+# HELP apt_larder_tunnels_total Total CONNECT tunnels successfully established.
+# TYPE apt_larder_tunnels_total counter
+apt_larder_tunnels_total 42
 # HELP apt_larder_cache_entries Current number of files tracked in the cache.
 # TYPE apt_larder_cache_entries gauge
 apt_larder_cache_entries 847
+# HELP apt_larder_cache_bytes Current disk space used by the cached files, in bytes.
+# TYPE apt_larder_cache_bytes gauge
+apt_larder_cache_bytes 52428800000
 ```
 
 Prometheus scrape config:

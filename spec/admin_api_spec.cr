@@ -43,7 +43,15 @@ Spectator.describe AptLarder::Admin::Api do
       expect(ctx.response.status_code).to eq(200)
       json = JSON.parse(response_body(ctx))
       expect(json["hits"].as_i64).to eq(0)
-      expect(json.as_h.keys.sort!).to eq(["bytes", "errors", "hits", "misses", "revalidations", "tunnels"])
+      expect(json.as_h.keys.sort!).to eq(["bytes", "cache_bytes", "errors", "hits", "misses", "revalidations", "tunnels"])
+    end
+
+    it "reports the disk space used by the cache" do
+      cache.store("mirror/pool/main/pkg.deb", IO::Memory.new("data".to_slice))
+      ctx = make_ctx("GET", "/api/stats")
+      api.handle(ctx)
+      json = JSON.parse(response_body(ctx))
+      expect(json["cache_bytes"].as_i64).to eq(4)
     end
   end
 
@@ -139,6 +147,7 @@ Spectator.describe AptLarder::Admin::Api do
       expect(body).to contain("apt_larder_cache_entries")
       expect(body).to contain("# TYPE apt_larder_hits_total counter")
       expect(body).to contain("# TYPE apt_larder_cache_entries gauge")
+      expect(body).to contain("# TYPE apt_larder_cache_bytes gauge")
     end
 
     it "reflects actual stats values" do
@@ -147,6 +156,7 @@ Spectator.describe AptLarder::Admin::Api do
       api.handle(ctx)
       body = response_body(ctx)
       expect(body).to contain("apt_larder_cache_entries 1")
+      expect(body).to contain("apt_larder_cache_bytes 4\n")
     end
   end
 end

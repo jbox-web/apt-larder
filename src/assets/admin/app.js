@@ -43,6 +43,7 @@
       document.getElementById('stat-misses').textContent = s.misses.toLocaleString();
       document.getElementById('stat-rate').textContent = rate + '%';
       document.getElementById('stat-bytes').textContent = fmt(s.bytes);
+      document.getElementById('stat-cache-bytes').textContent = fmt(s.cache_bytes || 0);
       document.getElementById('stat-errors').textContent = s.errors.toLocaleString();
       document.getElementById('stat-reval').textContent = s.revalidations.toLocaleString();
       document.getElementById('stat-tunnels').textContent = (s.tunnels || 0).toLocaleString();

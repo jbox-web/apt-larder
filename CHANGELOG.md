@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Disk space used by the cache: a "Cache size" card on the dashboard, a
+  `cache_bytes` field in `/api/stats` and an `apt_larder_cache_bytes` gauge in
+  `/api/metrics` (#1). Counted on the cached files, sidecars excluded: the
+  figure `max_cache_size_gb` is enforced against
+- Grafana dashboard: "Cache size" stat and graph, and the tunnel rate in
+  "Request rate"
+
 ## [1.3.1] - 2026-09-26
 
 ### Fixed

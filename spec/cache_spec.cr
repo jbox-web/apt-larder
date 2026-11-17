@@ -384,6 +384,67 @@ Spectator.describe AptLarder::Cache do
     end
   end
 
+  describe "#total_bytes" do
+    it "returns 0 for an empty cache" do
+      expect(cache.total_bytes).to eq(0_i64)
+    end
+
+    it "returns the summed size of the stored files" do
+      store("a.deb", "x")
+      store("b.deb", "yyy")
+      expect(cache.total_bytes).to eq(4_i64)
+    end
+
+    it "counts files already on disk at construction, sidecars excluded" do
+      FileUtils.mkdir_p(tmp_dir)
+      File.write(File.join(tmp_dir, "preexisting.deb"), "data")
+      File.write(File.join(tmp_dir, "preexisting.deb.sha256"), "deadbeef")
+      expect(cache.total_bytes).to eq(4_i64)
+    end
+
+    it "replaces the previous size when an existing key is re-stored" do
+      store("a.deb", "x")
+      store("a.deb", "xxxxx")
+      expect(cache.total_bytes).to eq(5_i64)
+    end
+
+    it "subtracts the size of an invalidated entry" do
+      store("a.deb", "x")
+      store("b.deb", "yyy")
+      cache.invalidate("a.deb")
+      expect(cache.total_bytes).to eq(3_i64)
+    end
+
+    it "is left untouched when invalidating a missing key" do
+      store("a.deb", "x")
+      cache.invalidate("missing.deb")
+      expect(cache.total_bytes).to eq(1_i64)
+    end
+
+    it "drops to 0 after a clear" do
+      store("a.deb", "x")
+      cache.clear
+      expect(cache.total_bytes).to eq(0_i64)
+    end
+
+    it "is re-anchored to the on-disk size by an eviction pass" do
+      store("a.deb", "xx")
+      # Written behind the cache's back: only a disk scan can see it.
+      File.write(File.join(tmp_dir, "out-of-band.deb"), "12345")
+      cache.evict_stale(7.days)
+      expect(cache.total_bytes).to eq(7_i64)
+    end
+
+    it "subtracts what an eviction pass removes" do
+      store("old.deb", "aaaaa")
+      past = Time.utc - 8.days
+      File.utime(past, past, File.join(tmp_dir, "old.deb"))
+      store("fresh.deb", "cc")
+      cache.evict_stale(7.days)
+      expect(cache.total_bytes).to eq(2_i64)
+    end
+  end
+
   describe "#evict (combined)" do
     it "applies both time-based and size-based eviction in one scan" do
       store("stale.deb", "aaaaa")

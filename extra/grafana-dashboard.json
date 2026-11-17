@@ -109,6 +109,28 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] },
+          "unit": "bytes"
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "id": 9,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value" },
+      "targets": [
+        {
+          "expr": "apt_larder_cache_bytes",
+          "legendFormat": "Cache size",
+          "refId": "A"
+        }
+      ],
+      "title": "Cache size",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -158,7 +180,8 @@
         { "expr": "rate(apt_larder_hits_total[5m])",          "legendFormat": "Hits",   "refId": "A" },
         { "expr": "rate(apt_larder_misses_total[5m])",        "legendFormat": "Misses", "refId": "B" },
         { "expr": "rate(apt_larder_revalidations_total[5m])", "legendFormat": "Reval",  "refId": "C" },
-        { "expr": "rate(apt_larder_errors_total[5m])",        "legendFormat": "Errors", "refId": "D" }
+        { "expr": "rate(apt_larder_errors_total[5m])",        "legendFormat": "Errors", "refId": "D" },
+        { "expr": "rate(apt_larder_tunnels_total[5m])",       "legendFormat": "Tunnels", "refId": "E" }
       ],
       "title": "Request rate",
       "type": "timeseries"
@@ -215,6 +238,23 @@
         }
       ],
       "title": "Cache entries",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "lineWidth": 2 } }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "id": 12,
+      "targets": [
+        {
+          "expr": "apt_larder_cache_bytes",
+          "legendFormat": "Cache size",
+          "refId": "A"
+        }
+      ],
+      "title": "Cache size",
       "type": "timeseries"
     }
   ],
