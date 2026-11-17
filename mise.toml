@@ -88,7 +88,15 @@ run = "cp $HOME/.local/share/mise/installs/crystal/{{tools.crystal.version}}/emb
 description = "Compile to production binary"
 run = '''
 crystal build {{vars.COMPILE_OPTS_RELEASE}} -o {{vars.OUTPUT_FILE}} {{vars.SOURCE_FILE}}
-cd bin; for f in *; do shasum --algorithm 256 $f > $f.sha256; done
+# Checksum only the binary that was just built. `cd bin; for f in *` also hashed
+# the .sha256 files produced by the previous run (myapp.sha256.sha256, one more
+# level each time) and any other binary sitting in bin/ — ameba, or the CLI
+# build the specs produce. OUTPUT_FILE is overridable by the environment, so the
+# path is not assumed to be under bin/.
+cd "$(dirname {{vars.OUTPUT_FILE}})"
+binary="$(basename {{vars.OUTPUT_FILE}})"
+rm -f "$binary.sha256"
+shasum --algorithm 256 "$binary" > "$binary.sha256"
 '''
 
 [tasks."release:deps"]
