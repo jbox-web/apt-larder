@@ -1,7 +1,7 @@
 [Unit]
 Description=apt-larder — APT caching proxy
-Documentation=https://github.com/nicoladmin/apt-larder
-After=network.target nss-lookup.target
+Documentation=https://github.com/jbox-web/apt-larder
+After=network-online.target nss-lookup.target
 Wants=network-online.target
 
 [Service]
@@ -22,8 +22,10 @@ LogsDirectory=apt-larder
 Restart=on-failure
 RestartSec=5s
 
-# Graceful shutdown: send SIGTERM, wait up to 30 s for in-flight requests.
-TimeoutStopSec=30
+# Graceful shutdown: send SIGTERM. apt-larder drains in-flight requests for
+# up to 30 s, then logs what is left and exits by itself; the extra 15 s keep
+# systemd from killing it at the very moment that drain gives up.
+TimeoutStopSec=45
 KillMode=mixed
 
 # Watchdog: systemd kills and restarts the service if no keepalive is

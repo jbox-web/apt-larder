@@ -20,9 +20,12 @@ services:
     # Override to root for local development only — do not use in production.
     user: root
     restart: unless-stopped
+    # Published on the loopback interface only: this stack is a local demo,
+    # and neither the proxy nor the admin UI belongs on a shared network
+    # without a decision to put them there.
     ports:
-      - "3142:3142"
-      - "8080:8080"
+      - "127.0.0.1:3142:3142"
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./apt-larder.example.yml:/home/nonroot/apt-larder.yml:ro
       - ./cache:/home/nonroot/cache
