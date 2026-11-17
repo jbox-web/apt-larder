@@ -21,6 +21,139 @@ Spectator.describe AptLarder::Cache do
       store("pkg.deb", "data")
       expect(cache.exists?("pkg.deb")).to be_true
     end
+
+    # A directory holds entries, it is not one.
+    it "returns false for a directory" do
+      store("mirror/pool/pkg.deb", "data")
+      expect(cache.exists?("mirror/pool")).to be_false
+      expect(cache.exists?("mirror")).to be_false
+    end
+  end
+
+  describe "cache root given with a trailing slash" do
+    subject(cache) { AptLarder::Cache.new("#{tmp_dir}/") }
+
+    it "lists entries under their real key" do
+      store("mirror/pool/pkg.deb", "data")
+      expect(cache.entries[:entries].map(&.key)).to eq(["mirror/pool/pkg.deb"])
+    end
+
+    it "really deletes what eviction reports as deleted" do
+      store("mirror/pool/pkg.deb", "data")
+      past = Time.utc - 10.days
+      File.utime(past, past, File.join(tmp_dir, "mirror/pool/pkg.deb"))
+      expect(cache.evict(max_age: 1.day)).to eq({1, 4_i64})
+      expect(File.exists?(File.join(tmp_dir, "mirror/pool/pkg.deb"))).to be_false
+    end
+  end
+
+  describe "a key that is both a file and a directory upstream" do
+    # A mirror answers 200 (its index page) on a directory path. Cached as a
+    # file, it must not keep the packages below it from being stored.
+    it "drops the entry standing where a directory is needed" do
+      store("mirror/pool/c/curl", "<html>listing</html>")
+      store("mirror/pool/c/curl/curl_1.deb", "DEB")
+      expect(cache.exists?("mirror/pool/c/curl/curl_1.deb")).to be_true
+      expect(File.read(File.join(tmp_dir, "mirror/pool/c/curl/curl_1.deb"))).to eq("DEB")
+      expect(cache.exists?("mirror/pool/c/curl")).to be_false
+      expect(File.exists?(File.join(tmp_dir, "mirror/pool/c/curl.sha256"))).to be_false
+      expect(cache.entry_count).to eq(1)
+      expect(cache.total_bytes).to eq(3_i64)
+    end
+
+    it "drops a blocking entry several levels up" do
+      store("mirror/debian", "<html>listing</html>")
+      store("mirror/debian/dists/stable/Release", "release")
+      expect(cache.exists?("mirror/debian/dists/stable/Release")).to be_true
+      expect(cache.entry_count).to eq(1)
+    end
+
+    it "refuses to store onto an existing directory and leaves nothing behind" do
+      store("mirror/pool/c/curl/curl_1.deb", "DEB")
+      expect { store("mirror/pool/c/curl", "<html>listing</html>") }.to raise_error(File::Error)
+      expect(Dir.children(File.join(tmp_dir, "mirror/pool/c")).sort!).to eq(["curl"])
+      expect(Dir.children(File.join(tmp_dir, "mirror/pool/c/curl")).sort!).to eq(["curl_1.deb", "curl_1.deb.sha256"])
+      expect(cache.entry_count).to eq(1)
+    end
+  end
+
+  describe "temporary download files" do
+    it "recognises the names store gives its temporary files" do
+      expect(AptLarder::Cache.temp?("mirror/pkg.deb.0123456789abcdef.tmp")).to be_true
+      expect(AptLarder::Cache.temp?("mirror/pkg.deb.tmp")).to be_false
+      expect(AptLarder::Cache.temp?("mirror/pkg.deb.0123456789abcdeg.tmp")).to be_false
+      expect(AptLarder::Cache.temp?("mirror/pkg.deb")).to be_false
+    end
+
+    it "purges the leftovers of a previous run at startup and does not count them" do
+      Dir.mkdir_p(File.join(tmp_dir, "mirror"))
+      orphan = File.join(tmp_dir, "mirror/pkg.deb.0123456789abcdef.tmp")
+      File.write(orphan, "half a download")
+      File.write(File.join(tmp_dir, "mirror/pkg.deb"), "data")
+      expect(cache.entry_count).to eq(1)
+      expect(cache.total_bytes).to eq(4_i64)
+      expect(File.exists?(orphan)).to be_false
+    end
+
+    # While the server runs, such a file is a download in flight.
+    it "is neither listed, flushed nor evicted while a download is in flight" do
+      store("mirror/pkg.deb", "data")
+      in_flight = File.join(tmp_dir, "mirror/other.deb.0123456789abcdef.tmp")
+      File.write(in_flight, "half a download")
+      past = Time.utc - 10.days
+      File.utime(past, past, in_flight)
+      expect(cache.entries[:entries].map(&.key)).to eq(["mirror/pkg.deb"])
+      expect(cache.evict(max_age: 1.day)).to eq({0, 0_i64})
+      expect(cache.entry_count).to eq(1)
+      expect(cache.clear).to eq(1)
+      expect(File.exists?(in_flight)).to be_true
+    end
+  end
+
+  describe "#mark_used" do
+    it "brings the mtime of an entry back to now" do
+      store("mirror/pool/pkg.deb", "data")
+      path = File.join(tmp_dir, "mirror/pool/pkg.deb")
+      past = Time.utc - 10.days
+      File.utime(past, past, path)
+      cache.mark_used("mirror/pool/pkg.deb")
+      expect(File.info(path).modification_time).to be > Time.utc - 1.minute
+    end
+
+    it "keeps a recently served entry out of time-based eviction" do
+      store("mirror/pool/pkg.deb", "data")
+      past = Time.utc - 10.days
+      File.utime(past, past, File.join(tmp_dir, "mirror/pool/pkg.deb"))
+      cache.mark_used("mirror/pool/pkg.deb")
+      expect(cache.evict(max_age: 1.day)).to eq({0, 0_i64})
+      expect(cache.exists?("mirror/pool/pkg.deb")).to be_true
+    end
+
+    it "writes to disk at most once per interval for a given key" do
+      store("mirror/pool/pkg.deb", "data")
+      path = File.join(tmp_dir, "mirror/pool/pkg.deb")
+      cache.mark_used("mirror/pool/pkg.deb")
+      past = Time.utc - 10.days
+      File.utime(past, past, path)
+      cache.mark_used("mirror/pool/pkg.deb")
+      expect(File.info(path).modification_time).to be < Time.utc - 9.days
+    end
+
+    it "ignores a missing entry" do
+      expect { cache.mark_used("mirror/pool/gone.deb") }.not_to raise_error
+      expect(cache.exists?("mirror/pool/gone.deb")).to be_false
+    end
+  end
+
+  describe "deferred disk scan" do
+    it "starts with empty gauges and fills them on rescan" do
+      store("mirror/pool/pkg.deb", "data")
+      deferred = AptLarder::Cache.new(tmp_dir, scan: false)
+      expect(deferred.entry_count).to eq(0)
+      deferred.rescan
+      expect(deferred.entry_count).to eq(1)
+      expect(deferred.total_bytes).to eq(4_i64)
+    end
   end
 
   describe "#store" do
@@ -54,7 +187,8 @@ Spectator.describe AptLarder::Cache do
 
     it "removes the .tmp file on failure" do
       broken = IO::Memory.new
-      broken.close # lecture depuis un IO fermé lève IO::Error
+      # Reading from a closed IO raises IO::Error.
+      broken.close
       expect { cache.store("pkg.deb", broken) }.to raise_error
       tmps = Dir.glob("#{tmp_dir}/**/*.tmp")
       expect(tmps).to be_empty
@@ -75,6 +209,16 @@ Spectator.describe AptLarder::Cache do
       store("pkg.deb", "data")
       expect(cache.fresh?("pkg.deb", 0.seconds)).to be_false
     end
+
+    it "returns false once the entry is older than the TTL" do
+      store("Release", "data")
+      past = Time.utc - 6.minutes
+      File.utime(past, past, File.join(tmp_dir, "Release"))
+      # A fresh instance: the one that stored the file remembers its own clock.
+      reopened = AptLarder::Cache.new(tmp_dir)
+      expect(reopened.fresh?("Release", 5.minutes)).to be_false
+      expect(reopened.fresh?("Release", 7.minutes)).to be_true
+    end
   end
 
   describe "#modification_time?" do
@@ -91,11 +235,21 @@ Spectator.describe AptLarder::Cache do
   describe "#touch" do
     it "updates the mtime" do
       store("pkg.deb", "data")
-      before = cache.modification_time?("pkg.deb") || raise "expected mtime"
-      sleep 10.milliseconds
+      past = Time.utc - 1.hour
+      File.utime(past, past, File.join(tmp_dir, "pkg.deb"))
       cache.touch("pkg.deb")
       after = cache.modification_time?("pkg.deb") || raise "expected mtime"
-      expect(after).to be >= before
+      expect(after).to be > Time.utc - 1.minute
+    end
+
+    it "reopens the freshness window of a stale entry" do
+      store("Release", "data")
+      past = Time.utc - 1.hour
+      File.utime(past, past, File.join(tmp_dir, "Release"))
+      reopened = AptLarder::Cache.new(tmp_dir)
+      expect(reopened.fresh?("Release", 5.minutes)).to be_false
+      reopened.touch("Release")
+      expect(reopened.fresh?("Release", 5.minutes)).to be_true
     end
 
     it "does not raise when file does not exist" do
@@ -283,6 +437,7 @@ Spectator.describe AptLarder::Cache do
     it "is a no-op for a key containing .. (never deletes outside the root)" do
       # victim sits in the parent of the cache root; "../victim.txt" resolves to it
       victim = File.join(File.dirname(tmp_dir), "victim-#{Random::Secure.hex(4)}.txt")
+      Dir.mkdir_p(File.dirname(victim))
       File.write(victim, "keep me")
       begin
         cache.invalidate("../#{File.basename(victim)}")
@@ -581,6 +736,26 @@ Spectator.describe AptLarder::Cache do
       idx = result[:entries].find!(&.key.ends_with?("Release"))
       expect(deb.immutable?).to be_true
       expect(idx.immutable?).to be_false
+    end
+
+    it "returns an empty page far beyond the last one instead of overflowing" do
+      store("mirror/pkg.deb", "data")
+      result = cache.entries(page: Int32::MAX, per_page: 200)
+      expect(result[:entries]).to be_empty
+      expect(result[:total]).to eq(1)
+    end
+
+    # Listings are served from a short-lived snapshot: a change made through
+    # the cache must never be hidden by it.
+    it "reflects a store and an invalidate made right after a listing" do
+      store("mirror/a.deb", "data")
+      expect(cache.entries[:entries].map(&.key)).to eq(["mirror/a.deb"])
+      store("mirror/b.deb", "data")
+      expect(cache.entries[:entries].map(&.key)).to eq(["mirror/a.deb", "mirror/b.deb"])
+      cache.invalidate("mirror/a.deb")
+      expect(cache.entries[:entries].map(&.key)).to eq(["mirror/b.deb"])
+      cache.clear
+      expect(cache.entries[:entries]).to be_empty
     end
   end
 end
