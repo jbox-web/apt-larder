@@ -516,6 +516,57 @@ Spectator.describe AptLarder::Cache do
       expect(result[:total]).to eq(5)
     end
 
+    it "filters by case-insensitive substring" do
+      store("deb.debian.org/pool/main/p/php/php-common_1_all.deb", "x")
+      store("deb.debian.org/pool/main/c/curl/curl_8_amd64.deb", "y")
+      result = cache.entries(search: "PHP-Common")
+      expect(result[:total]).to eq(1)
+      expect(result[:entries].map(&.key)).to eq(["deb.debian.org/pool/main/p/php/php-common_1_all.deb"])
+    end
+
+    it "sorts by key ascending by default" do
+      store("c.deb", "x")
+      store("a.deb", "x")
+      store("b.deb", "x")
+      expect(cache.entries[:entries].map(&.key)).to eq(["a.deb", "b.deb", "c.deb"])
+    end
+
+    it "sorts by key descending" do
+      store("c.deb", "x")
+      store("a.deb", "x")
+      store("b.deb", "x")
+      result = cache.entries(descending: true)
+      expect(result[:entries].map(&.key)).to eq(["c.deb", "b.deb", "a.deb"])
+    end
+
+    it "sorts by size" do
+      store("a.deb", "xx")
+      store("b.deb", "xxxxx")
+      store("c.deb", "x")
+      result = cache.entries(sort: AptLarder::Cache::EntrySort::Size)
+      expect(result[:entries].map(&.key)).to eq(["c.deb", "a.deb", "b.deb"])
+    end
+
+    it "sorts by modification time" do
+      store("a.deb", "x")
+      store("b.deb", "x")
+      store("c.deb", "x")
+      File.utime(Time.utc(2026, 1, 2), Time.utc(2026, 1, 2), File.join(tmp_dir, "a.deb"))
+      File.utime(Time.utc(2026, 1, 3), Time.utc(2026, 1, 3), File.join(tmp_dir, "b.deb"))
+      File.utime(Time.utc(2026, 1, 1), Time.utc(2026, 1, 1), File.join(tmp_dir, "c.deb"))
+      result = cache.entries(sort: AptLarder::Cache::EntrySort::Mtime, descending: true)
+      expect(result[:entries].map(&.key)).to eq(["b.deb", "a.deb", "c.deb"])
+    end
+
+    it "sorts before paginating" do
+      store("a.deb", "xx")
+      store("b.deb", "xxxxx")
+      store("c.deb", "x")
+      result = cache.entries(page: 2, per_page: 2, sort: AptLarder::Cache::EntrySort::Size, descending: true)
+      expect(result[:total]).to eq(3)
+      expect(result[:entries].map(&.key)).to eq(["c.deb"])
+    end
+
     it "excludes .sha256 sidecars" do
       store("pkg.deb", "data")
       result = cache.entries

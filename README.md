@@ -196,7 +196,7 @@ When `admin.enabled: true`, a second server starts on `admin.port` with:
 | `GET` | `/api/health` | `{"status":"ok","version":"..."}` |
 | `GET` | `/api/stats` | Cumulative counters (hits, misses, revalidations, errors, bytes, tunnels) and `cache_bytes`, the disk space used by the cache |
 | `GET` | `/api/metrics` | Prometheus text format (counters + cache_entries and cache_bytes gauges) |
-| `GET` | `/api/cache` | Paginated entry list (`?prefix=&page=&per_page=`) |
+| `GET` | `/api/cache` | Paginated entry list (`?prefix=&search=&sort=&order=&page=&per_page=`): `search` is a case-insensitive substring of the key, `sort` is `key` (default), `size` or `mtime`, `order` is `asc` (default) or `desc`, `per_page` is capped at 200 |
 | `DELETE` | `/api/cache` | Flush the entire cache |
 | `DELETE` | `/api/cache/:key` | Invalidate one entry (key URL-encoded) |
 | `POST` | `/api/evict` | Run eviction now — body: `{"max_age_days":N}` (defaults to `evict_after_days` config value) |

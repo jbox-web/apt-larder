@@ -15,6 +15,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   figure `max_cache_size_gb` is enforced against
 - Grafana dashboard: "Cache size" stat and graph, and the tunnel rate in
   "Request rate"
+- `/api/cache` accepts `search` (case-insensitive substring of the key),
+  `sort` (`key`, `size` or `mtime`) and `order` (`asc` or `desc`)
+- `apt-larder cache list` accepts `--search`, `--sort` and `--order`
+
+### Fixed
+
+- Admin UI cache browser: only the first 200 entries were listed, the UI asking
+  for 5000 per page while the API caps `per_page` at 200. The table now pages,
+  sorts and searches through the API, so it covers the whole cache; the "Type"
+  column is no longer sortable
+- `apt-larder cache list --all` stopped at the first 200 entries, for the same
+  reason; it now walks every page. Without `--all`, the page count is computed
+  from the page size the server applied, not from the `--per-page` asked for
+- Admin UI cache browser: pagination buttons were stacked one per line and
+  reduced to the current page, the sidebar `nav button` styles leaking onto
+  the DataTables pagination
+- Admin UI cache browser: keys are rendered as text instead of HTML
 
 ## [1.3.1] - 2026-09-26
 

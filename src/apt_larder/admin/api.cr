@@ -11,12 +11,15 @@ module AptLarder
     # |--------|------|-------------|
     # | GET | `/api/health` | Server status and version |
     # | GET | `/api/stats` | Cumulative proxy counters |
-    # | GET | `/api/cache` | Paginated cache entry list |
+    # | GET | `/api/cache` | Paginated cache entry list (`prefix`, `search`, `sort`, `order`, `page`, `per_page`) |
     # | DELETE | `/api/cache` | Flush the entire cache |
     # | DELETE | `/api/cache/:key` | Invalidate one entry (URL-encoded key) |
     # | POST | `/api/evict` | Run eviction with optional `max_age_days` |
     class Api
       Log = ::Log.for("apt-larder.admin")
+
+      # Upper bound of `per_page` on `GET /api/cache`.
+      MAX_PER_PAGE = 200
 
       def initialize(@cache : Cache, @proxy : Proxy, @default_evict_days : Int32 = 30)
       end
@@ -103,8 +106,12 @@ module AptLarder
         params = URI::Params.parse(req.query || "")
         prefix = params["prefix"]? || ""
         page = (params["page"]?.try(&.to_i?) || 1).clamp(1, Int32::MAX)
-        per_page = (params["per_page"]?.try(&.to_i?) || 50).clamp(1, 200)
-        result = @cache.entries(prefix, page, per_page)
+        per_page = (params["per_page"]?.try(&.to_i?) || 50).clamp(1, MAX_PER_PAGE)
+        search = params["search"]? || ""
+        sort = Cache::EntrySort.parse?(params["sort"]? || "") || Cache::EntrySort::Key
+        descending = params["order"]? == "desc"
+        result = @cache.entries(prefix: prefix, page: page, per_page: per_page,
+          search: search, sort: sort, descending: descending)
         json(res) do |j|
           j.object do
             j.field "total", result[:total]

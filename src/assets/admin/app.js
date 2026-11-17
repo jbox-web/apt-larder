@@ -2,9 +2,9 @@
   'use strict';
 
   // ── Tab switching ────────────────────────────────────────────────────────
-  document.querySelectorAll('nav button').forEach(btn => {
+  document.querySelectorAll('aside nav button').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('aside nav button').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById(btn.dataset.tab).classList.add('active');
@@ -52,53 +52,79 @@
   refreshStats();
   setInterval(refreshStats, 10000);
 
-  // ── Cache browser — DataTables for search/sort/pagination ────────────────
-  // Loads all entries once; DataTables handles client-side filtering.
+  // ── Cache browser — DataTables with server-side processing ───────────────
+  // Each page, sort or search is one /api/cache request, so the browser only
+  // ever holds the page on screen and the table covers the whole cache.
+  const SORT_COLUMNS = ['key', 'size', 'mtime'];
+
+  async function fetchCachePage(req, callback) {
+    const order = req.order[0] || { column: 0, dir: 'asc' };
+    const params = new URLSearchParams({
+      page: Math.floor(req.start / req.length) + 1,
+      per_page: req.length,
+      search: req.search.value,
+      sort: SORT_COLUMNS[order.column] || 'key',
+      order: order.dir
+    });
+    try {
+      const data = await apiFetch('GET', '/api/cache?' + params);
+      callback({
+        draw: req.draw,
+        recordsTotal: data.total,
+        recordsFiltered: data.total,
+        data: data.entries
+      });
+    } catch (e) {
+      console.error('cache fetch failed', e);
+      callback({ draw: req.draw, recordsTotal: 0, recordsFiltered: 0, data: [] });
+    }
+  }
+
   const dt = new DataTable('#cache-table', {
+    serverSide: true,
+    ajax: fetchCachePage,
     columns: [
-      { title: 'Key' },
-      // Store raw bytes for correct numeric sort, display formatted string.
-      { title: 'Size', render: { display: (d) => fmt(d), sort: (d) => d } },
-      { title: 'Last modified' },
-      { title: 'Type', searchable: false },
-      { title: '', orderable: false, searchable: false }
+      // Keys come from request paths: render them as text, never as HTML.
+      { title: 'Key', data: 'key', render: DataTable.render.text() },
+      { title: 'Size', data: 'size', render: (d) => fmt(d) },
+      { title: 'Last modified', data: 'mtime', render: (d) => new Date(d).toLocaleString() },
+      { title: 'Type', data: 'immutable', orderable: false, searchable: false,
+        render: (d) => d
+          ? '<span class="badge badge-immutable">immutable</span>'
+          : '<span class="badge badge-index">index</span>' },
+      { title: '', data: 'key', orderable: false, searchable: false,
+        render: (d) => `<button class="btn btn-danger btn-sm" data-key="${encodeURIComponent(d)}">Invalidate</button>` }
     ],
     order: [[0, 'asc']],
     pageLength: 50,
+    // The API caps per_page at 200: keep every choice at or below it.
+    lengthMenu: [10, 25, 50, 100, 200],
+    searchDelay: 300,
     language: { emptyTable: 'Cache is empty.' }
   });
 
-  async function loadCache() {
-    const data = await apiFetch('GET', '/api/cache?per_page=5000');
-    dt.clear();
-    data.entries.forEach(e => {
-      const mtime = new Date(e.mtime).toLocaleString();
-      const badge = e.immutable
-        ? '<span class="badge badge-immutable">immutable</span>'
-        : '<span class="badge badge-index">index</span>';
-      const btn = `<button class="btn btn-danger btn-sm" data-key="${encodeURIComponent(e.key)}">Invalidate</button>`;
-      dt.row.add([e.key, e.size, mtime, badge, btn]);
-    });
-    dt.draw();
+  // Re-fetches the current page, keeping the paging position.
+  function loadCache() {
+    dt.draw(false);
   }
 
-  // Invalidate a single row without reloading the whole table.
+  // Invalidate a single entry, then refresh the page it was on.
   document.getElementById('cache-table').addEventListener('click', async ev => {
     const btn = ev.target.closest('[data-key]');
     if (!btn) return;
     if (!confirm('Invalidate ' + decodeURIComponent(btn.dataset.key) + '?')) return;
     await apiFetch('DELETE', '/api/cache/' + btn.dataset.key);
-    dt.row(btn.closest('tr')).remove().draw();
+    loadCache();
   });
 
   document.getElementById('flush-all').addEventListener('click', async () => {
     if (!confirm('Flush the entire cache? This cannot be undone.')) return;
     const r = await apiFetch('DELETE', '/api/cache');
     alert('Deleted ' + r.deleted + ' entries.');
-    dt.clear().draw();
+    loadCache();
   });
 
-  // Load cache data when its tab is first shown.
+  // Refresh cache data whenever its tab is shown.
   document.querySelector('[data-tab="tab-cache"]').addEventListener('click', () => loadCache());
 
   // ── Actions ──────────────────────────────────────────────────────────────

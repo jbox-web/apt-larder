@@ -389,20 +389,39 @@ module AptLarder
       end
     end
 
-    # Returns paginated cache entries, optionally filtered by *prefix*.
+    # Column `entries` is ordered by.
+    enum EntrySort
+      Key
+      Size
+      Mtime
+    end
+
+    # Returns paginated cache entries, optionally filtered by *prefix* and by
+    # *search*, a case-insensitive substring of the key. Entries are ordered by
+    # *sort* (ties broken by key), reversed when *descending*, and only then
+    # paginated; `total` counts the entries left after filtering.
     # Scans the root directory on each call — intended for infrequent admin use.
-    def entries(prefix : String = "", page : Int32 = 1, per_page : Int32 = 50) : {entries: Array(EntryInfo), total: Int32}
+    def entries(prefix : String = "", page : Int32 = 1, per_page : Int32 = 50,
+                search : String = "", sort : EntrySort = EntrySort::Key,
+                descending : Bool = false) : {entries: Array(EntryInfo), total: Int32}
+      needle = search.downcase
       all = [] of EntryInfo
       Dir.glob("#{@root}/**/*") do |path|
         next if Cache.sidecar?(path)
         next unless File.file?(path)
         key = path[(@root.size + 1)..]
         next unless prefix.empty? || key.starts_with?(prefix)
+        next unless needle.empty? || key.downcase.includes?(needle)
         mtime = File.info(path).modification_time rescue next
         size = File.size(path) rescue next
         all << EntryInfo.new(key, size, mtime, immutable?(key))
       end
-      all.sort_by!(&.key)
+      case sort
+      in .key?   then all.sort_by!(&.key)
+      in .size?  then all.sort_by! { |entry| {entry.size, entry.key} }
+      in .mtime? then all.sort_by! { |entry| {entry.mtime, entry.key} }
+      end
+      all.reverse! if descending
       offset = (page - 1) * per_page
       {entries: all[offset, per_page]? || [] of EntryInfo, total: all.size}
     end

@@ -30,6 +30,37 @@ Spectator.describe AptLarder::Admin::Client do
     end
   end
 
+  # Serves a cache of *total* entries the way `GET /api/cache` does: `page` and
+  # `per_page` are honoured, `per_page` being capped at *cap*. Records every
+  # request.
+  private def with_paged_stub(total : Int32, cap : Int32 = 200, &)
+    captured = [] of Captured
+    server = HTTP::Server.new do |ctx|
+      captured << {
+        method:        ctx.request.method,
+        resource:      ctx.request.resource,
+        body:          "",
+        authorization: ctx.request.headers["Authorization"]?,
+      }
+      params = ctx.request.query_params
+      page = params["page"].to_i
+      per_page = params["per_page"].to_i.clamp(1, cap)
+      first = (page - 1) * per_page
+      keys = (first...{first + per_page, total}.min).map { |i| "pool/pkg#{i}.deb" }
+      ctx.response.content_type = "application/json"
+      {total: total, page: page, per_page: per_page,
+       entries: keys.map { |key| {key: key, size: 1, mtime: "2026-01-01T00:00:00Z", immutable: true} }}.to_json(ctx.response)
+    end
+    addr = server.bind_tcp("127.0.0.1", 0)
+    spawn { server.listen }
+    Fiber.yield
+    begin
+      yield config_for(addr.port), captured
+    ensure
+      server.close
+    end
+  end
+
   private def config_for(port : Int32, api_token : String = "") : AptLarder::AdminConfig
     AptLarder::AdminConfig.from_yaml(<<-YAML)
       enabled: true
@@ -79,6 +110,68 @@ Spectator.describe AptLarder::Admin::Client do
       with_stub(body: %({"total":0,"entries":[]})) do |config, captured|
         described_class.new(config).cache_list
         expect(captured.last[:resource]).to eq("/api/cache?page=1&per_page=50")
+      end
+    end
+  end
+
+  describe "#cache_list search and sort" do
+    it "carries search, sort and order in the query string" do
+      with_stub(body: %({"total":0,"entries":[]})) do |config, captured|
+        described_class.new(config).cache_list(page: 3, per_page: 10, search: "php common",
+          sort: AptLarder::Cache::EntrySort::Size, descending: true)
+        expect(captured.last[:resource]).to eq("/api/cache?page=3&per_page=10&search=php+common&sort=size&order=desc")
+      end
+    end
+
+    it "carries sort=mtime" do
+      with_stub(body: %({"total":0,"entries":[]})) do |config, captured|
+        described_class.new(config).cache_list(sort: AptLarder::Cache::EntrySort::Mtime)
+        expect(captured.last[:resource]).to eq("/api/cache?page=1&per_page=50&sort=mtime")
+      end
+    end
+  end
+
+  describe "#cache_list_all" do
+    it "walks every page past the per_page cap of the API" do
+      with_paged_stub(total: 450) do |config, captured|
+        result = described_class.new(config).cache_list_all
+        expect(result[:total]).to eq(450)
+        expect(result[:entries].size).to eq(450)
+        expect(result[:entries].first["key"].as_s).to eq("pool/pkg0.deb")
+        expect(result[:entries].last["key"].as_s).to eq("pool/pkg449.deb")
+        expect(captured.map(&.[:resource])).to eq([
+          "/api/cache?page=1&per_page=200",
+          "/api/cache?page=2&per_page=200",
+          "/api/cache?page=3&per_page=200",
+        ])
+      end
+    end
+
+    it "issues a single request when everything fits in one page" do
+      with_paged_stub(total: 3) do |config, captured|
+        result = described_class.new(config).cache_list_all
+        expect(result[:entries].size).to eq(3)
+        expect(captured.size).to eq(1)
+      end
+    end
+
+    it "returns no entries for an empty cache" do
+      with_paged_stub(total: 0) do |config, captured|
+        result = described_class.new(config).cache_list_all
+        expect(result[:total]).to eq(0)
+        expect(result[:entries]).to be_empty
+        expect(captured.size).to eq(1)
+      end
+    end
+
+    it "forwards the filters on every page" do
+      with_paged_stub(total: 250) do |config, captured|
+        described_class.new(config).cache_list_all(prefix: "deb.debian.org", search: "php",
+          sort: AptLarder::Cache::EntrySort::Size, descending: true)
+        expect(captured.map(&.[:resource])).to eq([
+          "/api/cache?prefix=deb.debian.org&page=1&per_page=200&search=php&sort=size&order=desc",
+          "/api/cache?prefix=deb.debian.org&page=2&per_page=200&search=php&sort=size&order=desc",
+        ])
       end
     end
   end

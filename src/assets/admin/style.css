@@ -16,14 +16,14 @@ aside { width: 220px; min-width: 220px; background: #1a1a2e; color: #c8cfe8;
 .brand-name { font-size: 1rem; font-weight: 600; color: white;
               letter-spacing: .01em; }
 
-nav { flex: 1; padding: .75rem 0; }
-nav button { display: flex; align-items: center; gap: .6rem; width: 100%;
-             background: none; border: none; color: #8892b0; padding: .65rem 1.5rem;
-             cursor: pointer; font-size: .875rem; text-align: left;
-             transition: background .15s, color .15s; border-left: 3px solid transparent; }
-nav button:hover  { background: rgba(255,255,255,.05); color: #ccd6f6; }
-nav button.active { background: rgba(100,149,237,.15); color: #ccd6f6;
-                    border-left-color: #6495ed; }
+aside nav { flex: 1; padding: .75rem 0; }
+aside nav button { display: flex; align-items: center; gap: .6rem; width: 100%;
+                   background: none; border: none; color: #8892b0; padding: .65rem 1.5rem;
+                   cursor: pointer; font-size: .875rem; text-align: left;
+                   transition: background .15s, color .15s; border-left: 3px solid transparent; }
+aside nav button:hover  { background: rgba(255,255,255,.05); color: #ccd6f6; }
+aside nav button.active { background: rgba(100,149,237,.15); color: #ccd6f6;
+                          border-left-color: #6495ed; }
 .nav-icon { font-size: .8rem; opacity: .7; }
 
 .sidebar-footer { padding: .75rem 1.5rem 1rem;

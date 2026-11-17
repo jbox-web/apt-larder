@@ -24,14 +24,42 @@ module AptLarder
         get("/api/stats")
       end
 
-      # Returns a paginated list of cache entries.
-      def cache_list(prefix : String = "", page : Int32 = 1, per_page : Int32 = 50) : JSON::Any
+      # Returns a paginated list of cache entries, optionally filtered by
+      # *prefix* and by *search* (case-insensitive substring of the key), and
+      # ordered by *sort*, reversed when *descending*.
+      def cache_list(prefix : String = "", page : Int32 = 1, per_page : Int32 = 50,
+                     search : String = "", sort : Cache::EntrySort = Cache::EntrySort::Key,
+                     descending : Bool = false) : JSON::Any
         params = URI::Params.build do |params_builder|
           params_builder.add("prefix", prefix) unless prefix.empty?
           params_builder.add("page", page.to_s)
           params_builder.add("per_page", per_page.to_s)
+          params_builder.add("search", search) unless search.empty?
+          params_builder.add("sort", sort.to_s.downcase) unless sort.key?
+          params_builder.add("order", "desc") if descending
         end
         get("/api/cache?#{params}")
+      end
+
+      # Returns every cache entry matching the filters of `cache_list`, walking
+      # the pages one by one: the API caps `per_page` at `Api::MAX_PER_PAGE`, so
+      # a single request cannot return a whole cache.
+      def cache_list_all(prefix : String = "", search : String = "",
+                         sort : Cache::EntrySort = Cache::EntrySort::Key,
+                         descending : Bool = false) : {total: Int32, entries: Array(JSON::Any)}
+        entries = [] of JSON::Any
+        total = 0
+        page = 1
+        loop do
+          result = cache_list(prefix: prefix, page: page, per_page: Api::MAX_PER_PAGE,
+            search: search, sort: sort, descending: descending)
+          total = result["total"].as_i
+          batch = result["entries"].as_a
+          entries.concat(batch)
+          break if batch.empty? || entries.size >= total
+          page += 1
+        end
+        {total: total, entries: entries}
       end
 
       # Flushes the entire cache and returns `{"deleted" => N}`.

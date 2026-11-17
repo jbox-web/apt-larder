@@ -75,6 +75,52 @@ Spectator.describe AptLarder::Admin::Api do
     end
   end
 
+  describe "GET /api/cache search and sort" do
+    private def list_keys(query : String) : Array(String)
+      ctx = make_ctx("GET", "/api/cache?#{query}")
+      api.handle(ctx)
+      JSON.parse(response_body(ctx))["entries"].as_a.map(&.["key"].as_s)
+    end
+
+    before_each do
+      cache.store("mirror/pool/main/c/curl_8_amd64.deb", IO::Memory.new("xx".to_slice))
+      cache.store("mirror/pool/main/p/php_8_amd64.deb", IO::Memory.new("xxxxx".to_slice))
+      cache.store("mirror/pool/main/z/zsh_5_amd64.deb", IO::Memory.new("x".to_slice))
+    end
+
+    it "filters entries by search term and reports the filtered total" do
+      ctx = make_ctx("GET", "/api/cache?search=PHP")
+      api.handle(ctx)
+      json = JSON.parse(response_body(ctx))
+      expect(json["total"].as_i).to eq(1)
+      expect(json["entries"].as_a.map(&.["key"].as_s)).to eq(["mirror/pool/main/p/php_8_amd64.deb"])
+    end
+
+    it "sorts by size descending" do
+      expect(list_keys("sort=size&order=desc")).to eq([
+        "mirror/pool/main/p/php_8_amd64.deb",
+        "mirror/pool/main/c/curl_8_amd64.deb",
+        "mirror/pool/main/z/zsh_5_amd64.deb",
+      ])
+    end
+
+    it "sorts by key descending" do
+      expect(list_keys("order=desc")).to eq([
+        "mirror/pool/main/z/zsh_5_amd64.deb",
+        "mirror/pool/main/p/php_8_amd64.deb",
+        "mirror/pool/main/c/curl_8_amd64.deb",
+      ])
+    end
+
+    it "falls back to key ascending on unknown sort and order values" do
+      expect(list_keys("sort=bogus&order=sideways")).to eq([
+        "mirror/pool/main/c/curl_8_amd64.deb",
+        "mirror/pool/main/p/php_8_amd64.deb",
+        "mirror/pool/main/z/zsh_5_amd64.deb",
+      ])
+    end
+  end
+
   describe "DELETE /api/cache" do
     it "flushes all entries and returns count" do
       cache.store("a/pkg.deb", IO::Memory.new("x".to_slice))

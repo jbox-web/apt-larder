@@ -26,6 +26,7 @@ module AptLarder
   # apt-larder healthcheck
   # apt-larder stats
   # apt-larder cache list --prefix deb.debian.org
+  # apt-larder cache list --all --search php --sort size --order desc
   # apt-larder cache invalidate "deb.debian.org/debian/pool/main/pkg.deb"
   # apt-larder cache flush
   # apt-larder evict --max-age-days 7
@@ -151,6 +152,7 @@ module AptLarder
         # ameba:disable Lint/UselessAssign
         define_flag prefix : String, long: "prefix", short: "p", default: "",
           description: "Filter by URL prefix"
+        # ameba:disable Lint/UselessAssign
         define_flag page : Int32, long: "page", default: 1_i32,
           description: "Page number"
         define_flag per_page : Int32, long: "per-page", default: 50_i32,
@@ -158,18 +160,39 @@ module AptLarder
         # ameba:disable Lint/UselessAssign
         define_flag all : Bool, long: "all", default: false,
           description: "Fetch all entries (overrides --page and --per-page)"
+        # ameba:disable Lint/UselessAssign
+        define_flag search : String, long: "search", short: "s", default: "",
+          description: "Filter by case-insensitive substring of the key"
+        define_flag sort : String, long: "sort", default: "key",
+          description: "Sort column: key, size or mtime"
+        # ameba:disable Lint/UselessAssign
+        define_flag order : String, long: "order", default: "asc",
+          description: "Sort order: asc or desc"
 
         def run
           AptLarder.init_app!(flags.config)
           client = Admin::Client.new(AptLarder.config.admin)
-          page, per_page = flags.all ? {1, Int32::MAX} : {flags.page, flags.per_page}
-          result = client.cache_list(flags.prefix, page, per_page)
-          total = result["total"].as_i
+          sort = AptLarder::Cache::EntrySort.parse?(flags.sort) ||
+                 raise ArgumentError.new("invalid --sort '#{flags.sort}' (expected key, size or mtime)")
+          unless flags.order.in?("asc", "desc")
+            raise ArgumentError.new("invalid --order '#{flags.order}' (expected asc or desc)")
+          end
+          descending = flags.order == "desc"
           if flags.all
+            listing = client.cache_list_all(prefix: flags.prefix, search: flags.search,
+              sort: sort, descending: descending)
+            total = listing[:total]
+            entries = listing[:entries]
             puts "#{total} entries"
           else
+            result = client.cache_list(prefix: flags.prefix, page: flags.page, per_page: flags.per_page,
+              search: flags.search, sort: sort, descending: descending)
+            total = result["total"].as_i
+            entries = result["entries"].as_a
+            # The server caps per_page: count the pages with the size it applied.
+            per_page = result["per_page"].as_i
             pages = ((total + per_page - 1).to_i64 / per_page).to_i
-            puts "#{total} entries  (page #{page}/#{pages})"
+            puts "#{total} entries  (page #{flags.page}/#{pages})"
           end
           puts
           table = Tallboy.table do
@@ -180,7 +203,7 @@ module AptLarder
               add "key"
             end
             header
-            result["entries"].as_a.each do |entry|
+            entries.each do |entry|
               row [
                 format_bytes(entry["size"].as_i64),
                 entry["mtime"].as_s[0, 10],
