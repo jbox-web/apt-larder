@@ -45,6 +45,19 @@ def spec_tmp_dir(prefix : String) : String
   File.join(SPEC_TMP_ROOT, "#{prefix}-#{Random::Secure.hex(4)}")
 end
 
+# Polls *condition* until it holds, raising after *timeout*.
+#
+# For states another fiber reaches asynchronously and that a spec must wait
+# for before going on: under -Dpreview_mt that fiber may run on another thread,
+# so a `Fiber.yield` proves nothing about how far it got.
+def wait_until(description : String, timeout : Time::Span = 2.seconds, & : -> Bool) : Nil
+  deadline = Time.instant + timeout
+  until yield
+    raise "timed out after #{timeout.total_seconds}s waiting until #{description}" if Time.instant > deadline
+    sleep 1.millisecond
+  end
+end
+
 # Temporarily sets environment variables for the duration of the block,
 # restoring original values (including nil) afterwards.
 # See: https://github.com/crystal-lang/crystal/issues/16449

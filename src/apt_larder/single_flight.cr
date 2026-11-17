@@ -13,9 +13,16 @@ module AptLarder
   #
   # The same key can be reused immediately after a run completes.
   class SingleFlight
+    # One run in progress: the channel its waiters block on, and how many
+    # callers joined it.
+    private class Flight
+      getter channel = Channel(Nil).new
+      property waiters = 0
+    end
+
     def initialize
       @mutex = Mutex.new
-      @inflight = {} of String => Channel(Nil)
+      @inflight = {} of String => Flight
     end
 
     # Runs *block* for *key*, or waits for the in-flight run to finish.
@@ -24,13 +31,14 @@ module AptLarder
     # a block for *key*, this fiber blocks until that block finishes, then
     # returns without running the block again.
     def run(key : String, &) : Nil
-      channel, leader = @mutex.synchronize do
+      flight, leader = @mutex.synchronize do
         if existing = @inflight[key]?
+          existing.waiters += 1
           {existing, false}
         else
-          ch = Channel(Nil).new
-          @inflight[key] = ch
-          {ch, true}
+          created = Flight.new
+          @inflight[key] = created
+          {created, true}
         end
       end
 
@@ -41,12 +49,20 @@ module AptLarder
           # Delete first so a new request arriving immediately after close
           # gets a fresh entry rather than the closing channel.
           @mutex.synchronize { @inflight.delete(key) }
-          channel.close
+          flight.channel.close
         end
       else
         # blocks until the leader closes the channel
-        channel.receive?
+        flight.channel.receive?
       end
+    end
+
+    # Number of callers that joined the run in progress for *key* as waiters
+    # (0 when there is none). A caller is counted as soon as it has found the
+    # run, under the same lock the leader removes it with: from then on it
+    # will not run its own block, even if it has not started blocking yet.
+    def waiters(key : String) : Int32
+      @mutex.synchronize { @inflight[key]?.try(&.waiters) || 0 }
     end
   end
 end

@@ -13,6 +13,44 @@ Spectator.describe AptLarder::SingleFlight do
     end
   end
 
+  describe "#waiters" do
+    it "is 0 for a key with no flight in progress" do
+      expect(sf.waiters("key")).to eq(0)
+    end
+
+    it "counts the callers that joined the flight in progress, and drops to 0 once it ends" do
+      leader_started = Channel(Nil).new
+      release = Channel(Nil).new
+      done = Channel(Nil).new(3)
+
+      spawn do
+        sf.run("key") do
+          leader_started.send(nil)
+          release.receive
+        end
+        done.send(nil)
+      end
+      leader_started.receive
+      during_leader_alone = sf.waiters("key")
+
+      2.times do
+        spawn do
+          sf.run("key") { }
+          done.send(nil)
+        end
+      end
+      wait_until("both waiters joined the flight") { sf.waiters("key") == 2 }
+      other_key = sf.waiters("other")
+
+      release.send(nil)
+      3.times { receive_or_fail(done) }
+
+      expect(during_leader_alone).to eq(0)
+      expect(other_key).to eq(0)
+      expect(sf.waiters("key")).to eq(0)
+    end
+  end
+
   describe "#run" do
     it "executes the block" do
       executed = false
@@ -56,8 +94,9 @@ Spectator.describe AptLarder::SingleFlight do
           done.send(nil)
         end
       end
-      # Lets both waiters run up to the point where they block on the flight.
-      Fiber.yield
+      # Both waiters have joined the flight: from here on, they cannot run
+      # their block whatever happens to the leader.
+      wait_until("both waiters joined the flight") { sf.waiters("key") == 2 }
       returned_while_leader_ran = waiters_returned.get
 
       release.send(nil)
@@ -103,8 +142,9 @@ Spectator.describe AptLarder::SingleFlight do
           done.send(nil)
         end
       end
-      # Lets both waiters run up to the point where they block on the flight.
-      Fiber.yield
+      # Both waiters have joined the flight: from here on, they cannot run
+      # their block whatever happens to the leader.
+      wait_until("both waiters joined the flight") { sf.waiters("key") == 2 }
       returned_while_leader_ran = waiters_returned.get
 
       release.send(nil)

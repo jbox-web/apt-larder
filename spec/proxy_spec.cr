@@ -90,17 +90,6 @@ Spectator.describe AptLarder::Proxy do
     end
   end
 
-  # A single-flight that reports every caller entering `run`, so an example
-  # can wait for concurrent requests to have reached the flight.
-  private class ObservedSingleFlight < AptLarder::SingleFlight
-    getter entered = Channel(Nil).new(8)
-
-    def run(key : String, &) : Nil
-      entered.send(nil)
-      super { yield }
-    end
-  end
-
   # Messages logged by the proxy while the block runs.
   private def captured_messages(&) : Array(String)
     messages = [] of String
@@ -1216,7 +1205,7 @@ Spectator.describe AptLarder::Proxy do
         ctx.response.status = HTTP::Status::NOT_FOUND
       end
 
-      flight = ObservedSingleFlight.new
+      flight = AptLarder::SingleFlight.new
       target = AptLarder::Proxy.new(cache, flight, max_redirects: 5, index_ttl: 5,
         connect_timeout: 10, read_timeout: 30, allow_local_targets: true)
 
@@ -1230,12 +1219,13 @@ Spectator.describe AptLarder::Proxy do
 
         # The leader first, up to the point where upstream holds its request.
         spawn { request.call }
-        flight.entered.receive
         arrived.receive
 
+        # Then both waiters, until they have joined the leader's flight: a
+        # waiter arriving after the flight ended would ask upstream again.
         2.times { spawn { request.call } }
-        2.times { flight.entered.receive }
-        Fiber.yield
+        key = "127.0.0.1:#{port}/pool/main/missing.deb"
+        wait_until("both waiters joined the flight") { flight.waiters(key) == 2 }
         release.close
         statuses = Array(Int32).new(3) { done.receive }
 
