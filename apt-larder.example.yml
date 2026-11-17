@@ -11,13 +11,18 @@ evict_after_days: 0
 max_cache_size_gb: 0
 server_host: "0.0.0.0"
 server_port: 3142
+
+# The admin server listens on every interface of the container, which is what
+# publishing its port requires — and what makes authentication mandatory:
+# apt-larder refuses to start with a non-loopback admin.host and no credential.
+# These are demo credentials for docker-compose.yml: change them.
 admin:
   enabled: true
   host: "0.0.0.0"
   port: 8080
   api_token: ""
-  ui_user: ""
-  ui_password: ""
+  ui_user: "admin"
+  ui_password: "change-me"
 
 # Host remapping — redirect requests for a given upstream host to a different
 # mirror. The cache key always uses the original hostname so the cache remains

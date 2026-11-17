@@ -2,7 +2,9 @@ module AptLarder
   # Top-level configuration loaded from a YAML file (default: `apt-larder.yml`).
   #
   # All fields have sensible defaults so a minimal config only needs to override
-  # what differs from the defaults. Unknown keys are silently ignored.
+  # what differs from the defaults. Unknown keys do not fail the load, but they
+  # are collected (`unknown_keys`) so startup can warn about a misspelt setting
+  # instead of silently running without it.
   #
   # ## Example
   #
@@ -24,6 +26,7 @@ module AptLarder
   # See `AdminConfig` for the nested `admin:` section.
   class Config
     include YAML::Serializable
+    include YAML::Serializable::Unmapped
 
     # Accepts both YAML integers (`0`) and floats (`0.5`) for Float64 fields.
     # YAML parses bare `0` as an integer, which Crystal's YAML::Serializable
@@ -82,13 +85,15 @@ module AptLarder
 
     # Delete cached files not accessed for this many days.
     #
-    # The eviction loop runs once per hour in the background. Set to `0`
-    # (default) to disable automatic eviction entirely.
+    # "Accessed" means downloaded, revalidated or served: a cache hit refreshes
+    # the file's timestamp (at most once per hour per file). The eviction loop
+    # runs at startup and then once per hour in the background. Set to `0`
+    # (default) to disable time-based eviction entirely.
     property evict_after_days : Int32 = 0
 
-    # Maximum cache size in gigabytes. When exceeded, the oldest files are
-    # deleted (LRU) until the cache fits within the limit. Set to `0` to
-    # disable size-based eviction entirely.
+    # Maximum cache size in gigabytes. When exceeded, the least recently
+    # accessed files are deleted (LRU) until the cache fits within the limit.
+    # Set to `0` to disable size-based eviction entirely.
     #
     # Accepts both integer (`0`) and float (`0.5`) in YAML.
     @[YAML::Field(converter: AptLarder::Config::Float64Converter)]
@@ -131,25 +136,35 @@ module AptLarder
     # avoid mutating `ENV` (which is not thread-safe on UNIX — see crystal#16449).
     #
     # Call after `from_yaml` and before `validate!`.
+    #
+    # Raises `ArgumentError` naming the variable when a numeric one does not
+    # parse.
     def apply_env!(env : Hash(String, String) = ENV.to_h) : Nil
       env["APT_LARDER_CACHE_DIR"]?.try { |v| @cache_dir = v }
-      env["APT_LARDER_INDEX_TTL"]?.try { |v| @index_ttl = v.to_i }
-      env["APT_LARDER_MAX_REDIRECTS"]?.try { |v| @max_redirects = v.to_i }
-      env["APT_LARDER_CONNECT_TIMEOUT"]?.try { |v| @connect_timeout = v.to_i }
-      env["APT_LARDER_READ_TIMEOUT"]?.try { |v| @read_timeout = v.to_i }
+      env_int(env, "APT_LARDER_INDEX_TTL").try { |v| @index_ttl = v }
+      env_int(env, "APT_LARDER_MAX_REDIRECTS").try { |v| @max_redirects = v }
+      env_int(env, "APT_LARDER_CONNECT_TIMEOUT").try { |v| @connect_timeout = v }
+      env_int(env, "APT_LARDER_READ_TIMEOUT").try { |v| @read_timeout = v }
       env["APT_LARDER_LOG_FILE"]?.try { |v| @log_file = v }
       env["APT_LARDER_LOG_LEVEL"]?.try { |v| @log_level = v }
       env["APT_LARDER_QUIET"]?.try { |v| @quiet = truthy?(v) }
-      env["APT_LARDER_EVICT_AFTER_DAYS"]?.try { |v| @evict_after_days = v.to_i }
-      env["APT_LARDER_MAX_CACHE_SIZE_GB"]?.try { |v| @max_cache_size_gb = v.to_f }
+      env_int(env, "APT_LARDER_EVICT_AFTER_DAYS").try { |v| @evict_after_days = v }
+      env_float(env, "APT_LARDER_MAX_CACHE_SIZE_GB").try { |v| @max_cache_size_gb = v }
       env["APT_LARDER_SERVER_HOST"]?.try { |v| @server_host = v }
-      env["APT_LARDER_SERVER_PORT"]?.try { |v| @server_port = v.to_i }
+      env_int(env, "APT_LARDER_SERVER_PORT").try { |v| @server_port = v }
       env["APT_LARDER_ADMIN_ENABLED"]?.try { |v| @admin.enabled = truthy?(v) }
       env["APT_LARDER_ADMIN_HOST"]?.try { |v| @admin.host = v }
-      env["APT_LARDER_ADMIN_PORT"]?.try { |v| @admin.port = v.to_i }
+      env_int(env, "APT_LARDER_ADMIN_PORT").try { |v| @admin.port = v }
       env["APT_LARDER_ADMIN_API_TOKEN"]?.try { |v| @admin.api_token = v }
       env["APT_LARDER_ADMIN_UI_USER"]?.try { |v| @admin.ui_user = v }
       env["APT_LARDER_ADMIN_UI_PASSWORD"]?.try { |v| @admin.ui_password = v }
+    end
+
+    # Keys found in the YAML that no setting corresponds to — typically a
+    # misspelt name (`evict_after_day`). Nested admin keys are prefixed with
+    # `admin.`.
+    def unknown_keys : Array(String)
+      yaml_unmapped.keys + admin.yaml_unmapped.keys.map { |key| "admin.#{key}" }
     end
 
     # Raises `ArgumentError` with a descriptive message if any field contains
@@ -163,8 +178,19 @@ module AptLarder
       value.downcase.in?("true", "1", "yes")
     end
 
+    private def env_int(env : Hash(String, String), name : String) : Int32?
+      value = env[name]? || return nil
+      value.to_i? || raise ArgumentError.new("#{name} must be an integer (got '#{value}')")
+    end
+
+    private def env_float(env : Hash(String, String), name : String) : Float64?
+      value = env[name]? || return nil
+      value.to_f? || raise ArgumentError.new("#{name} must be a number (got '#{value}')")
+    end
+
     private def collect_errors : Array(String)
       errors = collect_numeric_errors
+      errors.concat(collect_admin_errors)
       errors << "cache_dir must not be empty" if cache_dir.empty?
       begin
         ::Log::Severity.parse(log_level)
@@ -184,6 +210,22 @@ module AptLarder
       errors << "read_timeout must be > 0 (got #{read_timeout})" if read_timeout <= 0
       errors << "evict_after_days must be >= 0 (got #{evict_after_days})" if evict_after_days < 0
       errors << "max_cache_size_gb must be >= 0 (got #{max_cache_size_gb})" if max_cache_size_gb < 0
+      errors
+    end
+
+    # The two fail-open shapes of the admin authentication: credentials set by
+    # halves (which used to switch the UI auth off silently), and an admin
+    # server reachable from other hosts with no authentication at all — its
+    # API can flush the whole cache.
+    private def collect_admin_errors : Array(String)
+      errors = [] of String
+      if admin.ui_user.empty? != admin.ui_password.empty?
+        errors << "admin.ui_user and admin.ui_password must be set together"
+      end
+      if admin.enabled? && !admin.loopback_host? && !admin.auth_configured?
+        errors << "admin.host #{admin.host} is reachable from other hosts: set admin.api_token, " \
+                  "or admin.ui_user and admin.ui_password (or bind admin.host to 127.0.0.1)"
+      end
       errors
     end
   end

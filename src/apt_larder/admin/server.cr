@@ -3,8 +3,9 @@ require "crypto/subtle"
 
 module AptLarder
   module Admin
-    # Routes requests between Api and Handler, enforcing independent auth
-    # policies: Bearer token for /api/*, HTTP Basic for everything else.
+    # Routes requests between Api and Handler and authenticates them: /api/*
+    # accepts the Bearer token or the UI's Basic credentials, everything else
+    # takes the Basic credentials only.
     #
     # The two handlers are completely independent — Api has no knowledge of
     # the UI, and Handler has no knowledge of the API.
@@ -48,18 +49,34 @@ module AptLarder
         server.listen
       end
 
-      # Returns `true` when the API token matches, or when no token is configured.
-      # Uses a constant-time comparison to avoid leaking the token via timing.
+      # Returns `true` when the request may use the API: nothing is configured,
+      # or it carries the API token, or it carries the UI credentials (the web
+      # UI calls the API with the Basic credentials the browser already holds).
       private def api_authorized?(req : HTTP::Request) : Bool
-        return true if @config.api_token.empty?
+        return true unless @config.auth_configured?
+        bearer_ok?(req) || basic_ok?(req)
+      end
+
+      # Returns `true` when Basic Auth credentials match, or when no credentials
+      # are configured.
+      private def ui_authorized?(req : HTTP::Request) : Bool
+        return true unless @config.ui_auth?
+        basic_ok?(req)
+      end
+
+      # Constant-time comparison of the Bearer token; `false` when no token is
+      # configured, so an empty token never matches an empty header.
+      private def bearer_ok?(req : HTTP::Request) : Bool
+        return false if @config.api_token.empty?
         provided = req.headers["Authorization"]? || ""
         Crypto::Subtle.constant_time_compare(provided, "Bearer #{@config.api_token}")
       end
 
-      # Returns `true` when Basic Auth credentials match, or when no credentials
-      # are configured. Decoding failures (malformed Base64) return `false`.
-      private def ui_authorized?(req : HTTP::Request) : Bool
-        return true if @config.ui_user.empty?
+      # Checks HTTP Basic credentials against `ui_user` / `ui_password`;
+      # `false` when they are not configured. Decoding failures (malformed
+      # Base64) return `false`.
+      private def basic_ok?(req : HTTP::Request) : Bool
+        return false unless @config.ui_auth?
         auth = req.headers["Authorization"]?
         return false unless auth && auth.starts_with?("Basic ")
         decoded = Base64.decode_string(auth[6..]) rescue return false
