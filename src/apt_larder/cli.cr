@@ -14,7 +14,7 @@ module AptLarder
   #
   # - `server` — start the caching proxy
   # - `info`   — print version and Crystal build information
-  # - `healthcheck` — probe the admin API, for Docker's `HEALTHCHECK`
+  # - `healthcheck` — probe the proxy, for Docker's `HEALTHCHECK`
   # - `stats`  — show live proxy counters via the admin API
   # - `cache`  — manage the cache via the admin API (list / flush / invalidate)
   # - `evict`  — trigger LRU / time-based eviction via the admin API
@@ -22,7 +22,7 @@ module AptLarder
   # ## Usage
   #
   # ```
-  # apt-larder server --config /etc/apt-larder.yml
+  # apt-larder server --config /etc/apt-larder/apt-larder.yml
   # apt-larder healthcheck
   # apt-larder stats
   # apt-larder cache list --prefix deb.debian.org
@@ -34,9 +34,9 @@ module AptLarder
   class CLI < Admiral::Command
     # Starts the APT caching proxy.
     #
-    # Loads configuration from the file given by `--config` (default:
-    # `apt-larder.yml` in the working directory), sets up logging, then runs
-    # the `Server` until `SIGTERM` is received.
+    # Loads configuration from the file given by `--config` (which must then
+    # exist), or from `apt-larder.yml` in the working directory when there is
+    # one, sets up logging, then runs the `Server` until `SIGTERM` is received.
     #
     # Signal handling:
     # - `SIGUSR1` — reopen the log file (use after log rotation)
@@ -46,13 +46,13 @@ module AptLarder
 
       # ameba:disable Lint/UselessAssign
       define_flag config : String,
-        description: "Path to config file",
+        description: "Path to config file (default: apt-larder.yml in the working directory, if present)",
         long: "config",
         short: "c",
-        default: "apt-larder.yml"
+        default: ""
 
       def run
-        AptLarder.init_app!(flags.config)
+        AptLarder.init_app!(config_path(flags.config))
 
         server = AptLarder::Server.new(AptLarder.config)
 
@@ -91,13 +91,13 @@ module AptLarder
 
       # ameba:disable Lint/UselessAssign
       define_flag config : String,
-        description: "Path to config file",
+        description: "Path to config file (default: apt-larder.yml in the working directory, if present)",
         long: "config",
         short: "c",
-        default: "apt-larder.yml"
+        default: ""
 
       def run
-        AptLarder.init_app!(flags.config)
+        AptLarder.load_config!(config_path(flags.config))
         exit AptLarder::Healthcheck.run(AptLarder.config)
       rescue ex : Exception
         # Only an unreadable or invalid config file reaches this: the probe
@@ -113,10 +113,10 @@ module AptLarder
 
       # ameba:disable Lint/UselessAssign
       define_flag config : String,
-        description: "Path to config file",
+        description: "Path to config file (default: apt-larder.yml in the working directory, if present)",
         long: "config",
         short: "c",
-        default: "apt-larder.yml"
+        default: ""
 
       def run
         client = build_client
@@ -127,13 +127,15 @@ module AptLarder
         puts "Misses:         #{s["misses"].as_i64.format}"
         puts "Revalidations:  #{s["revalidations"].as_i64.format}"
         puts "Errors:         #{s["errors"].as_i64.format}"
+        puts "Tunnels:        #{s["tunnels"].as_i64.format}"
         puts "Bytes served:   #{format_bytes(s["bytes"].as_i64)}"
+        puts "Cache size:     #{format_bytes(s["cache_bytes"].as_i64)}"
       rescue ex : Exception
         handle_error(ex)
       end
 
       private def build_client
-        AptLarder.init_app!(flags.config)
+        AptLarder.load_config!(config_path(flags.config))
         Admin::Client.new(AptLarder.config.admin)
       end
     end
@@ -147,8 +149,8 @@ module AptLarder
         define_help description: "List cached entries"
 
         # ameba:disable Lint/UselessAssign
-        define_flag config : String, long: "config", short: "c", default: "apt-larder.yml",
-          description: "Path to config file"
+        define_flag config : String, long: "config", short: "c", default: "",
+          description: "Path to config file (default: apt-larder.yml in the working directory, if present)"
         # ameba:disable Lint/UselessAssign
         define_flag prefix : String, long: "prefix", short: "p", default: "",
           description: "Filter by URL prefix"
@@ -170,7 +172,7 @@ module AptLarder
           description: "Sort order: asc or desc"
 
         def run
-          AptLarder.init_app!(flags.config)
+          AptLarder.load_config!(config_path(flags.config))
           client = Admin::Client.new(AptLarder.config.admin)
           sort = AptLarder::Cache::EntrySort.parse?(flags.sort) ||
                  raise ArgumentError.new("invalid --sort '#{flags.sort}' (expected key, size or mtime)")
@@ -191,7 +193,7 @@ module AptLarder
             entries = result["entries"].as_a
             # The server caps per_page: count the pages with the size it applied.
             per_page = result["per_page"].as_i
-            pages = ((total + per_page - 1).to_i64 / per_page).to_i
+            pages = {(total + per_page - 1) // per_page, 1}.max
             puts "#{total} entries  (page #{flags.page}/#{pages})"
           end
           puts
@@ -223,11 +225,11 @@ module AptLarder
         define_help description: "Flush the entire cache"
 
         # ameba:disable Lint/UselessAssign
-        define_flag config : String, long: "config", short: "c", default: "apt-larder.yml",
-          description: "Path to config file"
+        define_flag config : String, long: "config", short: "c", default: "",
+          description: "Path to config file (default: apt-larder.yml in the working directory, if present)"
 
         def run
-          AptLarder.init_app!(flags.config)
+          AptLarder.load_config!(config_path(flags.config))
           client = Admin::Client.new(AptLarder.config.admin)
           result = client.cache_flush
           puts "Flushed #{result["deleted"].as_i} entries."
@@ -241,13 +243,13 @@ module AptLarder
         define_help description: "Invalidate a single cache entry"
 
         # ameba:disable Lint/UselessAssign
-        define_flag config : String, long: "config", short: "c", default: "apt-larder.yml",
-          description: "Path to config file"
+        define_flag config : String, long: "config", short: "c", default: "",
+          description: "Path to config file (default: apt-larder.yml in the working directory, if present)"
         # ameba:disable Lint/UselessAssign
         define_argument key : String, description: "Cache key to invalidate", required: true
 
         def run
-          AptLarder.init_app!(flags.config)
+          AptLarder.load_config!(config_path(flags.config))
           client = Admin::Client.new(AptLarder.config.admin)
           client.cache_invalidate(arguments.key)
           puts "Invalidated #{arguments.key}"
@@ -273,16 +275,23 @@ module AptLarder
       define_help description: "Run eviction now via the admin API"
 
       # ameba:disable Lint/UselessAssign
-      define_flag config : String, long: "config", short: "c", default: "apt-larder.yml",
-        description: "Path to config file"
+      define_flag config : String, long: "config", short: "c", default: "",
+        description: "Path to config file (default: apt-larder.yml in the working directory, if present)"
       # ameba:disable Lint/UselessAssign
       define_flag max_age_days : Int32, long: "max-age-days", default: 0_i32,
-        description: "Override evict_after_days for this run (0 = use config value)"
+        description: "Evict files not accessed for N days (default: evict_after_days; nothing is evicted when that is 0 too)"
 
       def run
-        AptLarder.init_app!(flags.config)
+        AptLarder.load_config!(config_path(flags.config))
         client = Admin::Client.new(AptLarder.config.admin)
+        if flags.max_age_days < 0
+          raise ArgumentError.new("invalid --max-age-days #{flags.max_age_days} (expected a positive number of days)")
+        end
         days = flags.max_age_days > 0 ? flags.max_age_days : nil
+        if days.nil? && AptLarder.config.evict_after_days == 0
+          puts "Time-based eviction is disabled (evict_after_days: 0): pass --max-age-days N to evict now."
+          return
+        end
         result = client.evict(days)
         freed = format_bytes(result["freed_bytes"].as_i64)
         puts "Evicted #{result["deleted"].as_i} files (freed #{freed})."
@@ -309,4 +318,10 @@ end
 
 private def format_bytes(n : Int64) : String
   AptLarder.format_bytes(n)
+end
+
+# Value of a `--config` flag as `init_app!` / `load_config!` expect it: `nil`
+# when the flag was not given, so that only an explicit path has to exist.
+private def config_path(flag : String) : String?
+  flag.empty? ? nil : flag
 end

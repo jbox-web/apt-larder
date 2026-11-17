@@ -19,7 +19,8 @@ module AptLarder
         get("/api/health")
       end
 
-      # Returns cumulative counters: hits, misses, revalidations, errors, bytes.
+      # Returns cumulative counters (hits, misses, revalidations, errors, bytes,
+      # tunnels) and `cache_bytes`, the disk space used by the cache.
       def stats : JSON::Any
         get("/api/stats")
       end
@@ -99,8 +100,7 @@ module AptLarder
         h = HTTP::Headers{"Content-Type" => "application/json"}
         h["Authorization"] = "Bearer #{@config.api_token}" unless @config.api_token.empty?
         # An instance client rather than `HTTP::Client.exec`: the class method
-        # exposes no timeout setter, and a request that never returns is the
-        # one failure mode the healthcheck subcommand must not have.
+        # exposes no timeout setter, which callers passing *timeout* rely on.
         client = HTTP::Client.new(@config.host, @config.port)
         if timeout = @timeout
           client.connect_timeout = timeout

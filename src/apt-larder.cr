@@ -33,16 +33,22 @@ require "./apt_larder/admin/*"
 #   1. `init_app!(config_file)` — load YAML, apply env overrides, validate, open log
 #   2. `Server.new(config).start` — bind, listen, run background loops
 #
+# The client subcommands (`stats`, `cache`, `evict`, `healthcheck`) only call
+# `load_config!`: they have no business opening the server's log file.
+#
 # Signal handlers update state here: `SIGUSR1` calls `reopen_log_file!`,
 # `SIGTERM` calls `server.stop`.
 module AptLarder
   Log = ::Log.for("apt-larder")
 
+  # Config file looked up in the working directory when none is given.
+  DEFAULT_CONFIG_FILE = "apt-larder.yml"
+
   # Serialises log-state mutation with teardown. `reopen_log_file!` runs on the
   # SIGUSR1 handler's own fiber, concurrently with the shutdown path's
-  # `close_log_file!`; both touch `@@log_file`/`@@logger`. Mirrors the `@@mutex`
-  # guard around systemd's `@@socket`. Boot-time `setup_log!` runs on the main
-  # fiber before any spawn, so it needs no lock.
+  # `close_log_file!`; both touch `@@logger`. Mirrors the `@@mutex` guard
+  # around systemd's `@@socket`. Boot-time `setup_log!` runs on the main fiber
+  # before any spawn, so it needs no lock.
   @@log_mutex = Mutex.new
 
   VERSION = {{ `shards version #{__DIR__}`.chomp.stringify }}
@@ -53,13 +59,40 @@ module AptLarder
     "#{VERSION} (#{GIT_REF})"
   end
 
-  # Bootstraps the application: load config → apply env vars → validate → open log.
-  # Raises `ArgumentError` if the config is invalid.
-  def self.init_app!(config_file)
-    load_config(config_file)
-    config.apply_env!
-    config.validate!
+  # Bootstraps the server: load config → apply env vars → validate → open log.
+  # Raises `ArgumentError` if the config is invalid, or if *config_file* is
+  # given and does not exist.
+  def self.init_app!(config_file : String?)
+    load_config!(config_file)
     setup_log!
+    config.unknown_keys.each do |key|
+      Log.warn { "unknown configuration key '#{key}' ignored — check its spelling" }
+    end
+    if config_file.nil? && !File.exists?(DEFAULT_CONFIG_FILE)
+      Log.warn { "no #{DEFAULT_CONFIG_FILE} in #{Dir.current}: running on defaults (pass --config to name a file)" }
+    end
+  end
+
+  # Loads, overrides from the environment and validates the configuration,
+  # without touching the log. Same errors as `init_app!`.
+  def self.load_config!(config_file : String?)
+    self.config = read_config(config_file)
+  end
+
+  # Builds the `Config` for *config_file*, overridden by *env* and validated.
+  #
+  # A path given explicitly must exist: silently falling back to the defaults
+  # would run the server with another cache directory, no admin server and
+  # another log destination than the ones the operator asked for. With `nil`,
+  # `DEFAULT_CONFIG_FILE` is used when present and the defaults otherwise — a
+  # container started with no configuration at all is a supported setup.
+  #
+  # Raises `ArgumentError` on a missing explicit file or an invalid value.
+  def self.read_config(config_file : String?, env : Hash(String, String) = ENV.to_h) : Config
+    config = Config.from_yaml(read_config_file(config_file))
+    config.apply_env!(env)
+    config.validate!
+    config
   end
 
   # Returns the active `Config`, constructing one with defaults if none has
@@ -68,26 +101,35 @@ module AptLarder
     @@config ||= default_config
   end
 
+  # Binds *backend* on *builder*: the application sources at *severity*, and
+  # every other source (the standard library's `http.server`, which reports
+  # handlers that raised) at warning level or stricter — an unhandled
+  # exception answered with a 500 must leave a trace.
+  #
+  # The catch-all goes first: for a source matching both bindings of the same
+  # backend, the level bound last is the one that applies.
+  def self.bind_log(builder : ::Log::Configuration, severity : ::Log::Severity, backend : ::Log::Backend) : Nil
+    builder.bind "*", {severity, ::Log::Severity::Warn}.max, backend
+    builder.bind "apt-larder.*", severity, backend
+  end
+
   # Closes the log file if logging to a file (no-op when writing to stdout).
   # Called from `CLI::Server#run`'s ensure block after `Server#start` returns.
   def self.close_log_file!
     @@log_mutex.synchronize do
-      @@log_file.try(&.close) unless log_to_stdout?
+      @@logger.try(&.close_io)
     end
   end
 
-  # Reopens the log file after log rotation (`SIGUSR1`).
+  # Reopens the log file after log rotation (`SIGUSR1`). When the file cannot
+  # be reopened, logging carries on in the previous one and the failure is
+  # reported there. No-op when writing to stdout.
   def self.reopen_log_file!
     @@log_mutex.synchronize do
-      # Close the old descriptor before dropping it — otherwise every rotation
-      # leaks the previous file's fd. No-op when writing to stdout.
-      @@log_file.try(&.close) unless log_to_stdout?
-      # Both must be reset: @@log_file to open the new file, @@logger to
-      # rebuild the backend pointing at it. Resetting only one leaves a
-      # backend writing to the old, already-closed file descriptor.
-      @@log_file = nil
-      @@logger = nil
-      setup_log!
+      next if log_to_stdout?
+      backend = @@logger
+      next unless backend
+      Log.error { "cannot reopen #{config.log_file}, still logging to the previous file" } unless backend.reopen(config.log_file)
     end
   end
 
@@ -95,48 +137,35 @@ module AptLarder
     Config.from_yaml("")
   end
 
-  # Reads *config_path* (silently uses defaults if the file is absent) and
-  # stores the parsed `Config`.
-  private def self.load_config(config_path)
-    config_file = load_config_file(config_path)
-    self.config = Config.from_yaml(config_file)
-  end
-
-  private def self.load_config_file(file)
-    file = File.expand_path(file)
-    return "" unless File.exists?(file)
-
-    File.read(file)
+  # Returns the YAML text for *config_file* — see `read_config` for what a
+  # missing file means in each case.
+  private def self.read_config_file(config_file : String?) : String
+    if config_file
+      path = File.expand_path(config_file)
+      raise ArgumentError.new("config file not found: #{config_file}") unless File.exists?(path)
+      return File.read(path)
+    end
+    File.exists?(DEFAULT_CONFIG_FILE) ? File.read(DEFAULT_CONFIG_FILE) : ""
   end
 
   private def self.config=(config : Config)
     @@config = config
   end
 
-  # Configures Crystal's `Log` using the severity from `config.log_level`.
-  # Falls back to `:info` and logs a warning if the value is unrecognised.
+  # Configures Crystal's `Log` using the severity from `config.log_level`
+  # (validated beforehand by `Config#validate!`).
   private def self.setup_log!
     severity = ::Log::Severity.parse(config.log_level)
+    backend = logger
     ::Log.setup do |builder|
-      builder.bind "apt-larder.*", severity, logger
+      bind_log(builder, severity, backend)
     end
-  rescue ArgumentError
-    ::Log.setup do |builder|
-      builder.bind "*", :info, logger
-    end
-    Log.warn { "unknown log_level '#{config.log_level}', defaulting to info" }
   end
 
-  # Returns the `Log::IOBackend` for the current log destination, creating it
+  # Returns the `LogBackend` for the configured log destination, creating it
   # on first call.
-  private def self.logger
-    @@logger ||= ::Log::IOBackend.new(log_file)
-  end
-
-  # Returns the log IO — `STDOUT` or the configured file path opened in append
-  # mode. Memoised; reset by `reopen_log_file!`.
-  private def self.log_file
-    @@log_file ||= log_to_stdout? ? STDOUT : File.open(config.log_file, "a")
+  private def self.logger : LogBackend
+    @@logger ||= LogBackend.new(log_to_stdout? ? STDOUT : File.open(config.log_file, "a"))
   end
 
   private def self.log_to_stdout?
@@ -149,7 +178,7 @@ unless Crystal.env.test?
   begin
     AptLarder::CLI.run
   rescue e : Exception
-    puts e.message
+    STDERR.puts "Error: #{e.message || e.class.name}"
     exit 1
   end
 end
