@@ -54,6 +54,13 @@ module AptLarder
     # available. Connections idle beyond `IDLE_TTL` are closed and skipped.
     # The host bucket is dropped once empty so the table cannot grow unbounded.
     def checkout(uri : URI, now : Time::Instant = Time.instant) : HTTP::Client
+      checkout?(uri, now) || HTTP::Client.new(uri)
+    end
+
+    # Returns a pooled connection for *uri*, or `nil` when none is available —
+    # for callers that need to know whether the connection they hold is a
+    # reused one (and may therefore have gone stale) or a fresh one.
+    def checkout?(uri : URI, now : Time::Instant = Time.instant) : HTTP::Client?
       key = host_key(uri)
       # Collect expired connections and close them after releasing the lock —
       # a socket close(2) must not serialise other fibers on the pool.
@@ -73,7 +80,33 @@ module AptLarder
         client
       end
       stale.each { |client| client.close rescue nil }
-      reused || HTTP::Client.new(uri)
+      reused
+    end
+
+    # Closes every pooled connection idle beyond `IDLE_TTL`, whatever its
+    # host, and returns how many were closed. `checkout?` only prunes the host
+    # it is asked for: without this sweep, the connection kept for a host that
+    # is never contacted again (a one-off redirect target) would hold its file
+    # descriptor until the process stops.
+    def sweep(now : Time::Instant = Time.instant) : Int32
+      stale = [] of HTTP::Client
+      @mutex.synchronize do
+        @idle.reject! do |_, pool|
+          pool.reject! do |entry|
+            expired = now - entry.idle_since > IDLE_TTL
+            stale << entry.client if expired
+            expired
+          end
+          pool.empty?
+        end
+      end
+      stale.each { |client| client.close rescue nil }
+      stale.size
+    end
+
+    # Number of idle connections currently pooled, all hosts together.
+    def idle_count : Int32
+      @mutex.synchronize { @idle.sum { |_, pool| pool.size } }
     end
 
     # Closes *client* and discards it. Silently ignores errors (e.g. already

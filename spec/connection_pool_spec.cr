@@ -7,6 +7,21 @@ Spectator.describe AptLarder::ConnectionPool do
   let(uri_port) { URI.parse("http://example.com:8080") }
   let(uri_other) { URI.parse("http://other.com") }
 
+  # An IO whose `close` always fails with something other than an `IO::Error`
+  # (which `HTTP::Client#close` swallows on its own), as a TLS socket does
+  # when its shutdown fails.
+  private class UnclosableIO < IO::Memory
+    def close : Nil
+      raise "close failed"
+    end
+  end
+
+  # `HTTP::Client` exposes no `closed?`. A client built over an IO of ours
+  # closes that IO when it is closed itself, and the IO can be asked.
+  private def client_over(io : IO) : HTTP::Client
+    HTTP::Client.new(io, "example.com", 80)
+  end
+
   describe "#checkout" do
     it "returns an HTTP::Client when the pool is empty" do
       expect(pool.checkout(uri)).to be_a(HTTP::Client)
@@ -57,6 +72,13 @@ Spectator.describe AptLarder::ConnectionPool do
       fresh = pool.checkout(uri)
       expect(clients.map(&.object_id).includes?(fresh.object_id)).to be_false
     end
+
+    it "closes the connection checked in beyond IDLE_PER_HOST and leaves the pooled ones open" do
+      ios = Array(IO::Memory).new(5) { IO::Memory.new }
+      ios.each { |io| pool.checkin(uri, client_over(io)) }
+
+      expect(ios.map(&.closed?)).to eq([false, false, false, false, true])
+    end
   end
 
   describe "idle expiry" do
@@ -66,6 +88,22 @@ Spectator.describe AptLarder::ConnectionPool do
       pool.checkin(uri, client, now: t0)
       later = t0 + AptLarder::ConnectionPool::IDLE_TTL + 1.second
       expect(pool.checkout(uri, now: later).object_id).not_to eq(client.object_id)
+    end
+
+    it "closes a connection idle longer than IDLE_TTL when it is skipped at checkout" do
+      t0 = Time.instant
+      expired = IO::Memory.new
+      pool.checkin(uri, client_over(expired), now: t0)
+      pool.checkout?(uri, now: t0 + 51.seconds)
+      expect(expired.closed?).to be_true
+    end
+
+    it "leaves a connection still within IDLE_TTL open at checkout" do
+      t0 = Time.instant
+      kept = IO::Memory.new
+      pool.checkin(uri, client_over(kept), now: t0)
+      pool.checkout?(uri, now: t0 + 49.seconds)
+      expect(kept.closed?).to be_false
     end
 
     it "reuses a connection still within IDLE_TTL" do
@@ -85,14 +123,67 @@ Spectator.describe AptLarder::ConnectionPool do
   end
 
   describe "#discard" do
-    it "does not raise on an open client" do
-      expect { pool.discard(HTTP::Client.new(uri)) }.not_to raise_error
+    it "closes the connection" do
+      io = IO::Memory.new
+      pool.discard(client_over(io))
+      expect(io.closed?).to be_true
     end
 
-    it "does not raise on an already-closed client" do
+    # Discarding is what the proxy does with a connection it already knows is
+    # broken: a failing close must not replace the error being handled.
+    it "swallows an error raised while closing" do
+      io = UnclosableIO.new
+      outcome = begin
+        pool.discard(client_over(io))
+        "returned"
+      rescue ex
+        "raised #{ex.message}"
+      end
+      expect(outcome).to eq("returned")
+    end
+  end
+
+  describe "#checkout?" do
+    it "returns nil when no connection is pooled for the host" do
+      expect(pool.checkout?(uri)).to be_nil
+    end
+
+    it "returns the pooled connection" do
       client = HTTP::Client.new(uri)
-      client.close
-      expect { pool.discard(client) }.not_to raise_error
+      pool.checkin(uri, client)
+      expect(pool.checkout?(uri).try(&.object_id)).to eq(client.object_id)
+    end
+  end
+
+  describe "#sweep" do
+    it "closes the idle connections of every host once they are too old" do
+      now = Time.instant
+      pool.checkin(uri, HTTP::Client.new(uri), now - 2.minutes)
+      pool.checkin(uri_other, HTTP::Client.new(uri_other), now - 2.minutes)
+      expect(pool.sweep(now)).to eq(2)
+      expect(pool.idle_count).to eq(0)
+    end
+
+    it "closes the expired connections and leaves the fresh ones open" do
+      now = Time.instant
+      old_io = IO::Memory.new
+      fresh_io = IO::Memory.new
+      pool.checkin(uri, client_over(old_io), now - 2.minutes)
+      pool.checkin(uri_other, client_over(fresh_io), now - 5.seconds)
+      pool.sweep(now)
+      expect(old_io.closed?).to be_true
+      expect(fresh_io.closed?).to be_false
+    end
+
+    it "keeps the connections that are still fresh" do
+      now = Time.instant
+      old = HTTP::Client.new(uri)
+      fresh = HTTP::Client.new(uri)
+      pool.checkin(uri, old, now - 2.minutes)
+      pool.checkin(uri, fresh, now - 5.seconds)
+      expect(pool.sweep(now)).to eq(1)
+      expect(pool.idle_count).to eq(1)
+      expect(pool.checkout?(uri, now).try(&.object_id)).to eq(fresh.object_id)
     end
   end
 end
