@@ -16,11 +16,11 @@ module AptLarder
   # Type=notify
   # NotifyAccess=main
   # WatchdogSec=30
-  # ExecStart=/usr/bin/apt-larder server --config /etc/apt-larder.yml
+  # ExecStart=/usr/local/bin/apt-larder server --config /etc/apt-larder/apt-larder.yml
   # ```
   module SystemD
     Log = ::Log.for("apt-larder.systemd")
-    @@socket : UNIXSocket? = nil
+    @@socket : Socket? = nil
     @@mutex = Mutex.new
 
     # Sends `READY=1` — signals that the service is fully started and
@@ -86,15 +86,44 @@ module AptLarder
         sock.send(payload)
       end
     rescue
-      # On any error (broken socket, etc.) discard it so the next call
-      # re-opens a fresh one. Notify is best-effort and must never crash.
-      @@mutex.synchronize { @@socket = nil }
+      # On any error (broken socket, etc.) close and discard it so the next
+      # call re-opens a fresh one. Notify is best-effort and must never crash.
+      @@mutex.synchronize do
+        @@socket.try(&.close) rescue nil
+        @@socket = nil
+      end
     end
 
-    private def self.open_socket(path : String) : UNIXSocket
-      # Abstract sockets start with '@'; UNIXSocket expects '\0' instead.
-      path = "\0" + path[1..] if path.starts_with?("@")
-      UNIXSocket.new(path, type: Socket::Type::DGRAM)
+    private def self.open_socket(path : String) : Socket
+      return UNIXSocket.new(path, type: Socket::Type::DGRAM) unless path.starts_with?("@")
+      connect_abstract(path[1..])
+    end
+
+    # Connects a datagram socket to the abstract UNIX socket *name* (what
+    # `NOTIFY_SOCKET=@name` designates, Linux only).
+    #
+    # An abstract address is a NUL byte followed by the name, and — unlike a
+    # path — it is compared over the exact length passed to connect(2).
+    # `Socket::UNIXAddress` always passes the size of the whole structure, so
+    # the kernel would look for the name padded with NULs, find nothing, and
+    # the notification would be refused: the address is built by hand here,
+    # with its real length.
+    private def self.connect_abstract(name : String) : Socket
+      addr = LibC::SockaddrUn.new
+      addr.sun_family = LibC::SaFamilyT.new(LibC::AF_UNIX)
+      offset = offsetof(LibC::SockaddrUn, @sun_path)
+      capacity = sizeof(LibC::SockaddrUn) - offset - 1
+      raise ArgumentError.new("abstract socket name too long (#{name.bytesize} > #{capacity} bytes)") if name.bytesize > capacity
+      (pointerof(addr).as(UInt8*) + offset + 1).copy_from(name.to_unsafe, name.bytesize)
+      length = LibC::SocklenT.new(offset + 1 + name.bytesize)
+
+      socket = Socket.new(Socket::Family::UNIX, Socket::Type::DGRAM)
+      unless LibC.connect(socket.fd, pointerof(addr).as(LibC::Sockaddr*), length) == 0
+        error = Socket::ConnectError.from_errno("connect")
+        socket.close
+        raise error
+      end
+      socket
     end
   end
 end
