@@ -11,6 +11,8 @@ evict_after_days: 0
 max_cache_size_gb: 0
 server_host: "0.0.0.0"
 server_port: 3142
+# connect_ports: [443]         # ports CONNECT tunnels may reach
+# allow_local_targets: false   # let clients reach loopback/link-local targets
 
 # The admin server listens on every interface of the container, which is what
 # publishing its port requires — and what makes authentication mandatory:

@@ -13,6 +13,10 @@ evict_after_days: 0
 max_cache_size_gb: 0
 server_host: "0.0.0.0"
 server_port: 3142
+# Ports CONNECT tunnels may reach (HTTPS repositories). Default: [443].
+connect_ports: [443]
+# Clients cannot make the proxy reach loopback or link-local addresses.
+allow_local_targets: false
 
 # A host other than loopback requires api_token, or ui_user and ui_password.
 admin:

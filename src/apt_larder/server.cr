@@ -25,7 +25,9 @@ module AptLarder
         connect_timeout: @config.connect_timeout,
         read_timeout: @config.read_timeout,
         quiet: @config.quiet?,
-        remaps: @config.remaps
+        remaps: @config.remaps,
+        allow_local_targets: @config.allow_local_targets?,
+        connect_ports: @config.connect_ports
       )
       @http_server = nil.as(HTTP::Server?)
       @in_flight = Atomic(Int32).new(0)

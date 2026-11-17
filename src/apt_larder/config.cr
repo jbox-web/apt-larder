@@ -120,6 +120,23 @@ module AptLarder
     # TCP port the proxy server listens on.
     property server_port : Int32 = 3142
 
+    # When `false` (default), clients cannot make the proxy reach a loopback,
+    # unspecified (`0.0.0.0`) or link-local address — neither with a GET nor
+    # with a CONNECT tunnel, and not through a redirect either. This is what
+    # keeps a client of the proxy port away from services bound to the proxy
+    # host's loopback interface (the admin server among them) and from cloud
+    # instance metadata.
+    #
+    # Targets named in `remaps` are always allowed: they come from this file,
+    # not from the client. Set to `true` only if clients must reach a mirror
+    # on the proxy host by its local address without a remap.
+    property? allow_local_targets : Bool = false
+
+    # Ports a CONNECT tunnel may be opened to. Defaults to `[443]` (HTTPS);
+    # add the port of an HTTPS repository served elsewhere (`[443, 8443]`).
+    # An empty list disables CONNECT altogether.
+    property connect_ports : Array(Int32) = [443]
+
     # Configuration for the optional admin server (REST API + web UI).
     #
     # See `AdminConfig` for available fields.
@@ -152,6 +169,8 @@ module AptLarder
       env_float(env, "APT_LARDER_MAX_CACHE_SIZE_GB").try { |v| @max_cache_size_gb = v }
       env["APT_LARDER_SERVER_HOST"]?.try { |v| @server_host = v }
       env_int(env, "APT_LARDER_SERVER_PORT").try { |v| @server_port = v }
+      env["APT_LARDER_ALLOW_LOCAL_TARGETS"]?.try { |v| @allow_local_targets = truthy?(v) }
+      env_int_list(env, "APT_LARDER_CONNECT_PORTS").try { |v| @connect_ports = v }
       env["APT_LARDER_ADMIN_ENABLED"]?.try { |v| @admin.enabled = truthy?(v) }
       env["APT_LARDER_ADMIN_HOST"]?.try { |v| @admin.host = v }
       env_int(env, "APT_LARDER_ADMIN_PORT").try { |v| @admin.port = v }
@@ -188,6 +207,13 @@ module AptLarder
       value.to_f? || raise ArgumentError.new("#{name} must be a number (got '#{value}')")
     end
 
+    private def env_int_list(env : Hash(String, String), name : String) : Array(Int32)?
+      value = env[name]? || return nil
+      value.split(',', remove_empty: true).map do |item|
+        item.strip.to_i? || raise ArgumentError.new("#{name} must be a comma-separated list of integers (got '#{value}')")
+      end
+    end
+
     private def collect_errors : Array(String)
       errors = collect_numeric_errors
       errors.concat(collect_admin_errors)
@@ -210,6 +236,9 @@ module AptLarder
       errors << "read_timeout must be > 0 (got #{read_timeout})" if read_timeout <= 0
       errors << "evict_after_days must be >= 0 (got #{evict_after_days})" if evict_after_days < 0
       errors << "max_cache_size_gb must be >= 0 (got #{max_cache_size_gb})" if max_cache_size_gb < 0
+      unless connect_ports.all?(&.in?(1..65535))
+        errors << "connect_ports must only hold ports in 1–65535 (got #{connect_ports})"
+      end
       errors
     end
 

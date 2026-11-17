@@ -17,6 +17,20 @@ Spectator.describe AptLarder::Config do
       expect(config.remaps).to be_empty
       expect(config.server_host).to eq("0.0.0.0")
       expect(config.server_port).to eq(3142)
+      expect(config.allow_local_targets?).to be_false
+      expect(config.connect_ports).to eq([443])
+    end
+
+    it "parses the target policy fields" do
+      config = AptLarder::Config.from_yaml("allow_local_targets: true\nconnect_ports: [443, 8443]")
+      expect(config.allow_local_targets?).to be_true
+      expect(config.connect_ports).to eq([443, 8443])
+    end
+
+    it "accepts an empty connect_ports list (CONNECT disabled)" do
+      config = AptLarder::Config.from_yaml("connect_ports: []")
+      expect(config.connect_ports).to be_empty
+      expect { config.validate! }.not_to raise_error
     end
 
     # YAML reads a bare `50` as an integer, which a Float64 property rejects
@@ -144,24 +158,26 @@ Spectator.describe AptLarder::Config do
     it "maps every variable to its own field" do
       config = AptLarder::Config.from_yaml("")
       config.apply_env!({
-        "APT_LARDER_CACHE_DIR"         => "/srv/cache",
-        "APT_LARDER_INDEX_TTL"         => "11",
-        "APT_LARDER_MAX_REDIRECTS"     => "12",
-        "APT_LARDER_CONNECT_TIMEOUT"   => "13",
-        "APT_LARDER_READ_TIMEOUT"      => "14",
-        "APT_LARDER_LOG_FILE"          => "/srv/log",
-        "APT_LARDER_LOG_LEVEL"         => "warn",
-        "APT_LARDER_QUIET"             => "yes",
-        "APT_LARDER_EVICT_AFTER_DAYS"  => "15",
-        "APT_LARDER_MAX_CACHE_SIZE_GB" => "16.5",
-        "APT_LARDER_SERVER_HOST"       => "192.0.2.1",
-        "APT_LARDER_SERVER_PORT"       => "17",
-        "APT_LARDER_ADMIN_ENABLED"     => "true",
-        "APT_LARDER_ADMIN_HOST"        => "192.0.2.2",
-        "APT_LARDER_ADMIN_PORT"        => "18",
-        "APT_LARDER_ADMIN_API_TOKEN"   => "tok",
-        "APT_LARDER_ADMIN_UI_USER"     => "usr",
-        "APT_LARDER_ADMIN_UI_PASSWORD" => "pwd",
+        "APT_LARDER_CACHE_DIR"           => "/srv/cache",
+        "APT_LARDER_INDEX_TTL"           => "11",
+        "APT_LARDER_MAX_REDIRECTS"       => "12",
+        "APT_LARDER_CONNECT_TIMEOUT"     => "13",
+        "APT_LARDER_READ_TIMEOUT"        => "14",
+        "APT_LARDER_LOG_FILE"            => "/srv/log",
+        "APT_LARDER_LOG_LEVEL"           => "warn",
+        "APT_LARDER_QUIET"               => "yes",
+        "APT_LARDER_EVICT_AFTER_DAYS"    => "15",
+        "APT_LARDER_MAX_CACHE_SIZE_GB"   => "16.5",
+        "APT_LARDER_SERVER_HOST"         => "192.0.2.1",
+        "APT_LARDER_SERVER_PORT"         => "17",
+        "APT_LARDER_ALLOW_LOCAL_TARGETS" => "YES",
+        "APT_LARDER_CONNECT_PORTS"       => "443, 8443",
+        "APT_LARDER_ADMIN_ENABLED"       => "true",
+        "APT_LARDER_ADMIN_HOST"          => "192.0.2.2",
+        "APT_LARDER_ADMIN_PORT"          => "18",
+        "APT_LARDER_ADMIN_API_TOKEN"     => "tok",
+        "APT_LARDER_ADMIN_UI_USER"       => "usr",
+        "APT_LARDER_ADMIN_UI_PASSWORD"   => "pwd",
       })
       expect(config.cache_dir).to eq("/srv/cache")
       expect(config.index_ttl).to eq(11)
@@ -175,6 +191,8 @@ Spectator.describe AptLarder::Config do
       expect(config.max_cache_size_gb).to eq(16.5)
       expect(config.server_host).to eq("192.0.2.1")
       expect(config.server_port).to eq(17)
+      expect(config.allow_local_targets?).to be_true
+      expect(config.connect_ports).to eq([443, 8443])
       expect(config.admin.enabled?).to be_true
       expect(config.admin.host).to eq("192.0.2.2")
       expect(config.admin.port).to eq(18)
@@ -199,6 +217,19 @@ Spectator.describe AptLarder::Config do
       config = AptLarder::Config.from_yaml("")
       expect { config.apply_env!({"APT_LARDER_MAX_CACHE_SIZE_GB" => "big"}) }
         .to raise_error(ArgumentError, "APT_LARDER_MAX_CACHE_SIZE_GB must be a number (got 'big')")
+    end
+
+    it "names the variable when a port list does not parse" do
+      config = AptLarder::Config.from_yaml("")
+      expect { config.apply_env!({"APT_LARDER_CONNECT_PORTS" => "443,https"}) }
+        .to raise_error(ArgumentError, "APT_LARDER_CONNECT_PORTS must be a comma-separated list of integers (got '443,https')")
+    end
+  end
+
+  describe "#unknown_keys" do
+    it "is empty for a config made of known keys" do
+      config = AptLarder::Config.from_yaml("index_ttl: 5\nadmin:\n  enabled: false")
+      expect(config.unknown_keys).to be_empty
     end
 
     it "lists misspelt keys, nested ones under their section" do
@@ -270,6 +301,11 @@ Spectator.describe AptLarder::Config do
     it "raises on a server_port above 65535" do
       config = AptLarder::Config.from_yaml("server_port: 65536")
       expect { config.validate! }.to raise_error(ArgumentError, /server_port/)
+    end
+
+    it "raises on a CONNECT port outside 1-65535" do
+      config = AptLarder::Config.from_yaml("connect_ports: [443, 70000]")
+      expect { config.validate! }.to raise_error(ArgumentError, /connect_ports/)
     end
 
     it "raises when only one of the UI credentials is set" do
