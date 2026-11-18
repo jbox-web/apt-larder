@@ -50,6 +50,20 @@ jobs:
       - name: Install dependencies
         run: mise dev:deps
 
+      # crystalreleaser only warns when the tag and shard.yml disagree: the
+      # released binaries would then report the version of the tag, and a
+      # build of the same commit from source the one of shard.yml. The ref is
+      # passed through the environment, never written into the script.
+      - name: Check the tag against shard.yml
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="$(shards version)"
+          if [ "${REF_NAME#v}" != "$version" ]; then
+            echo "tag $REF_NAME does not match the version of shard.yml ($version)" >&2
+            exit 1
+          fi
+
       - name: Run tests
         run: mise dev:spec
 

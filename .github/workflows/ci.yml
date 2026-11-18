@@ -100,11 +100,23 @@ jobs:
   # exercised on a tag push, i.e. during the release itself: a break there
   # ships a release short of a platform. Building it here moves the failure
   # back to the pull request. `mise release:static` runs the two steps of
-  # release.yml on one runner: `build --split --snapshot` builds the static
-  # linux binaries in docker (arm64 through QEMU), then `release --merge
-  # --snapshot --skip=publish` packages them.
+  # release.yml on one runner: `build --split --snapshot --clean`, then `release
+  # --merge --snapshot --allow-missing --skip=publish`, which packages what was
+  # built (mise.toml holds the exact commands).
+  #
+  # One leg per runner of release.yml, because each builds a different share.
+  # The linux leg builds the static linux binaries in docker (arm64 through
+  # QEMU). A macOS runner has no docker: crystalreleaser leaves the linux
+  # platforms "to another runner" and builds the native darwin binary of its
+  # own architecture, with the dynamic-library check (otool -L) of the real
+  # release. Without the macOS legs, that half of the release is run for the
+  # first time by the tag push.
   build_static_binaries:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-26, macos-26-intel]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
       - name: Git checkout
@@ -116,29 +128,50 @@ jobs:
           fetch-depth: 0
 
       - name: Set up QEMU
+        if: runner.os == 'Linux'
         uses: docker/setup-qemu-action@v4
 
       # crystalreleaser's emulation check reads `docker buildx ls`.
       - name: Set up Docker Buildx
+        if: runner.os == 'Linux'
         uses: docker/setup-buildx-action@v4
 
       - name: Setup mise
         uses: jdx/mise-action@v5
 
+      # TODO: remove me when https://github.com/crystal-lang/crystal/issues/16746 is fixed
+      - name: Fix Crystal shards
+        if: runner.os == 'macOS'
+        run: mise dev:fix-shards-command
+
+      # The OpenSSL static_libs links (see .crystalreleaser.yml), as in the
+      # macOS jobs of release.yml. Remove with static_libs when the project
+      # does not link OpenSSL.
+      - name: Install OpenSSL 4
+        if: runner.os == 'macOS'
+        run: brew install openssl@4
+
       - name: Build static binaries
         run: mise release:static
 
       # An exit code of 0 says the binaries were linked, not that they start.
-      # The arm64 one runs through the QEMU handlers installed above. The glob
-      # stands for the project's binary: dist/<os>_<arch>/ holds only it and
-      # its checksum.
+      # On linux the arm64 one runs through the QEMU handlers installed above;
+      # a macOS leg only has its own architecture. The glob stands for the
+      # project's binary: dist/<os>_<arch>/ holds only it and its checksum.
       - name: Run the binaries just built
         run: |
-          for arch in amd64 arm64; do
-            bin="$(find "dist/linux_$arch" -type f -perm -u+x ! -name '*.sha256' | head -n 1)"
-            test -n "$bin" || { echo "no binary under dist/linux_$arch" >&2; exit 1; }
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          expected=1
+          if [ "$os" = linux ]; then expected=2; fi
+          count=0
+          for dir in dist/"$os"_*/; do
+            [ -d "$dir" ] || continue
+            bin="$(find "$dir" -type f -perm -100 ! -name '*.sha256' | head -n 1)"
+            test -n "$bin" || { echo "no binary under $dir" >&2; exit 1; }
             "$bin" --version
+            count=$((count + 1))
           done
+          test "$count" -eq "$expected" || { echo "$count binaries under dist/${os}_*, expected $expected" >&2; exit 1; }
 
   test_linux_amd64:
     runs-on: ubuntu-24.04

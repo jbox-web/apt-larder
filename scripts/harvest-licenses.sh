@@ -24,7 +24,9 @@
 #       runtime | libgc    | Boehm-GC             same
 #       clib    | libyaml  | licenses-upstream/libyaml.txt
 #                                                 on-disk text, copied verbatim
-#     `#` starts a comment. shard/project entries carry a real copyright line,
+#     `#` starts a comment, at the start of a line or after an entry. A name
+#     may not start with `clib-`: that prefix is the one of the grouped files
+#     written below. shard/project entries carry a real copyright line,
 #     so they are copied as-is; clib/runtime entries share one canonical text
 #     between several dependencies, hence the grouping.
 #
@@ -59,7 +61,20 @@ fi
 # it for the instant between the two renames: a directory cannot be replaced by
 # another in one step.)
 BUILD="$OUT.tmp.$$"
-trap 'rm -rf "$BUILD"' EXIT
+OLD="$OUT.old.$$"
+# Whatever ends the script, nothing of it is left behind: the work directory
+# goes, and a licenses/ that was moved aside and not replaced yet comes back.
+# INT and TERM are turned into an exit so that this runs for them too: bash
+# skips the EXIT trap when a signal it does not trap kills it.
+cleanup() {
+  rm -rf "$BUILD"
+  if [ -d "$OLD" ]; then
+    if [ -d "$OUT" ]; then rm -rf "$OLD"; else mv "$OLD" "$OUT"; fi
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 rm -rf "$BUILD"
 mkdir -p "$BUILD"
 
@@ -70,10 +85,15 @@ mkdir -p "$BUILD"
 SCRATCH="$BUILD/.used"
 mkdir -p "$SCRATCH"
 
+# printf, not echo, wherever a field is written: an entry named `-n` or `-e`
+# is an option to echo, which then prints nothing.
+entries=0
 while IFS='|' read -r kind name source; do
-  kind="$(echo "$kind" | tr -d '[:space:]')"
-  name="$(echo "$name" | tr -d '[:space:]')"
-  source="$(echo "$source" | tr -d '[:space:]')"
+  # A comment after the entry.
+  source="${source%%#*}"
+  kind="$(printf '%s' "$kind" | tr -d '[:space:]')"
+  name="$(printf '%s' "$name" | tr -d '[:space:]')"
+  source="$(printf '%s' "$source" | tr -d '[:space:]')"
   [ -z "$kind" ] && continue
   case "$kind" in
     \#*) continue ;;
@@ -85,11 +105,23 @@ while IFS='|' read -r kind name source; do
     echo "harvest: an entry of kind '$kind' has no name" >&2
     exit 1
   fi
-  if [ -e "$BUILD/$name.txt" ] || grep -qx "$name" "$SCRATCH/names" 2>/dev/null; then
+  # A fixed string after `--`: as a pattern, `a.c` matched an earlier `abc`,
+  # and a name starting with a dash was read as an option of grep, which then
+  # waited on the manifest itself as its input.
+  if [ -e "$BUILD/$name.txt" ] || grep -qxF -- "$name" "$SCRATCH/names" 2>/dev/null </dev/null; then
     echo "harvest: two entries are named '$name'" >&2
     exit 1
   fi
-  echo "$name" >> "$SCRATCH/names"
+  # clib-<id>.txt is where the grouped notices go: an entry of that name would
+  # be overwritten by its group, without a word.
+  case "$name" in
+    clib-*)
+      echo "harvest: the name '$name' starts with clib-, the prefix of the grouped notices" >&2
+      exit 1
+      ;;
+  esac
+  printf '%s\n' "$name" >> "$SCRATCH/names"
+  entries=$((entries + 1))
   case "$kind" in
     shard|project)
       # On-disk license text copied verbatim (carries a real copyright line):
@@ -105,7 +137,7 @@ while IFS='|' read -r kind name source; do
         # The library's own license file: verbatim, under the library's name.
         cp "$source" "$BUILD/$name.txt"
       elif [ -f "licenses-spdx/$source.txt" ]; then
-        echo "$name" >> "$SCRATCH/$source.list"
+        printf '%s\n' "$name" >> "$SCRATCH/$source.list"
       else
         echo "harvest: '$source' for '$name' is neither a file nor an SPDX id of licenses-spdx/" >&2
         exit 1
@@ -118,6 +150,13 @@ while IFS='|' read -r kind name source; do
       ;;
   esac
 done < <(grep -v '^#' "$MANIFEST")
+
+# A manifest that lists nothing is a mistake, not a project without notices:
+# that one has no manifest at all (see above).
+if [ "$entries" -eq 0 ]; then
+  echo "harvest: $MANIFEST holds no entry" >&2
+  exit 1
+fi
 
 # Sorted glob → deterministic baked output. Join the accumulated names with ", ".
 for list in "$SCRATCH"/*.list; do
@@ -133,13 +172,23 @@ done
 
 rm -rf "$SCRATCH"
 
+# What was assembled, to compare with what ends up in place.
+assembled="$(cd "$BUILD" && cksum -- * | LC_ALL=C sort)"
+
 # `mv` onto a directory that exists moves INTO it. When another run swapped its
 # own output in between the two renames below, ours lands inside it: that
 # output is complete and comes from the same manifest, so ours is dropped.
-OLD="$OUT.old.$$"
 rm -rf "$OLD"
 if [ -d "$OUT" ]; then mv "$OUT" "$OLD" 2>/dev/null || true; fi
 mv "$BUILD" "$OUT"
 rm -rf "$OLD" "$OUT/$(basename "$BUILD")"
+
+# The first rename is allowed to fail (the race above), so its failure is not
+# an error by itself; what is one is a licenses/ that does not hold what was
+# just assembled, whatever the reason: stale notices must not pass for fresh.
+if [ "$(cd "$OUT" && cksum -- * | LC_ALL=C sort)" != "$assembled" ]; then
+  echo "harvest: $OUT/ does not hold what was just assembled" >&2
+  exit 1
+fi
 
 echo "harvested $(find "$OUT" -maxdepth 1 -type f | wc -l | tr -d ' ') license files into $OUT/"
